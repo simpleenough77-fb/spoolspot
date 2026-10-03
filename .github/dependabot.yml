@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Dependency updates (ADR-0002, ADR-0007 SLAs). Dependabot PRs are exempt from the ticket-key
-# and sign-off rules; a human links the ticket when merging. Cooldown mirrors minimumReleaseAge.
+# and sign-off rules; a human links the ticket when merging. Cooldown is 7 days (zizmor dependabot-cooldown); security updates bypass it.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -8,7 +8,7 @@ updates:
     schedule:
       interval: weekly
     cooldown:
-      default-days: 3
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: 'chore(deps)'
@@ -18,7 +18,7 @@ updates:
     schedule:
       interval: weekly
     cooldown:
-      default-days: 3
+      default-days: 7
     commit-message:
       prefix: 'ci(deps)'
     labels: [dependencies, ci]
@@ -27,7 +27,7 @@ updates:
     schedule:
       interval: weekly
     cooldown:
-      default-days: 3
+      default-days: 7
     commit-message:
       prefix: 'ci(deps)'
     labels: [dependencies, ci]
@@ -36,7 +36,7 @@ updates:
     schedule:
       interval: weekly
     cooldown:
-      default-days: 3
+      default-days: 7
     commit-message:
       prefix: 'ci(deps)'
     labels: [dependencies, ci]
