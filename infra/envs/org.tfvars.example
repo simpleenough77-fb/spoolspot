@@ -1,0 +1,5 @@
+# Copy to infra/aws/org/org.auto.tfvars (gitignored).
+member_account_ids = ["<shared id>", "<identity-prod id>", "<identity-nonprod id>"]
+log_bucket         = "ss-logs-<shared-account-id>"
+alerts_topic_arn   = "arn:aws:sns:us-east-1:<shared-account-id>:ss-alerts"
+budget_email       = "<monitored mailbox, not on spoolspot.com>"

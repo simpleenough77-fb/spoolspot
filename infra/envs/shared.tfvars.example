@@ -1,0 +1,7 @@
+# Copy to infra/aws/shared/shared.auto.tfvars (gitignored). Real values never go in tracked files.
+github_repo       = "simpleenough77-fb/spoolspot"
+oidc_provider_arn = "arn:aws:iam::<shared-account-id>:oidc-provider/token.actions.githubusercontent.com"
+org_id            = "o-xxxxxxxxxx"
+alert_email       = "<monitored mailbox, not on spoolspot.com>"
+state_bucket      = "ss-tfstate-<shared-account-id>"
+mgmt_account_id   = "<management (payer) account id>"
