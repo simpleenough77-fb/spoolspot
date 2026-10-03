@@ -4,10 +4,12 @@ variable "github_repo" {
   description = "owner/repo, e.g. avivi/spoolspot"
 }
 variable "oidc_provider_arn" {
+  sensitive   = true
   type        = string
   description = "From bootstrap output"
 }
 variable "org_id" {
+  sensitive   = true
   type        = string
   description = "AWS Organization ID (o-xxxx); lets CloudTrail from the mgmt account write to the log bucket"
 }
@@ -24,10 +26,12 @@ variable "prod_apply_branch_ref" {
   default = "refs/heads/main"
 }
 variable "state_bucket" {
+  sensitive   = true
   type        = string
   description = "Name of the OpenTofu state bucket created by bootstrap (ss-tfstate-<account id>); kept out of tracked files"
 }
 variable "mgmt_account_id" {
+  sensitive   = true
   type        = string
   description = "Management (payer) account id: its org-trail logs and EventBridge alerts are delivered here; kept out of tracked files"
 }

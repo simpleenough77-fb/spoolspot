@@ -1,0 +1,4 @@
+# Copy to envs/prod.auto.tfvars (gitignored). Values here are placeholders.
+zone_id            = "REPLACE"
+pi_private_ip      = "REPLACE"
+dmarc_rua          = "mailto:REPLACE@example.invalid"

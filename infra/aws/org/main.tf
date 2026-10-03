@@ -150,7 +150,13 @@ locals {
       pattern = { source = ["aws.cloudtrail"], detail = { eventName = ["StopLogging", "DeleteTrail", "UpdateTrail"] } }
     }
     iam-scp-changes = {
-      pattern = { source = ["aws.iam", "aws.organizations"], detail = { eventName = ["CreateAccessKey", "CreateUser", "AttachPolicy", "PutRolePolicy", "DetachPolicy", "DeletePolicy", "UpdatePolicy", "CreatePolicy"] } }
+      pattern = { source = ["aws.iam", "aws.organizations"], detail = { eventName = [
+        # aws.iam
+        "CreateAccessKey", "CreateUser", "CreateLoginProfile", "UpdateAssumeRolePolicy",
+        "AttachRolePolicy", "AttachUserPolicy", "PutRolePolicy", "PutUserPolicy",
+        # aws.organizations (SCPs)
+        "AttachPolicy", "DetachPolicy", "DeletePolicy", "UpdatePolicy", "CreatePolicy",
+      ] } }
     }
   }
 }

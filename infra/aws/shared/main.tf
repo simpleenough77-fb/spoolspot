@@ -449,20 +449,24 @@ resource "aws_ssm_parameter" "cf_drift_read_token" {
 locals {
   roles = {
     "ss-gh-plan" = {
-      sub = ["repo:${local.repo}:pull_request"]
-      job = null
+      sub      = ["repo:${local.repo}:pull_request"]
+      job      = "${local.repo}/.github/workflows/infra-plan.yml@refs/pull/*"
+      job_test = "StringLike"
     }
     "ss-gh-apply-aws" = {
-      sub = ["repo:${local.repo}:environment:aws-apply"]
-      job = "${local.repo}/.github/workflows/infra-apply.yml@${var.prod_apply_branch_ref}"
+      sub      = ["repo:${local.repo}:environment:aws-apply"]
+      job      = "${local.repo}/.github/workflows/infra-apply.yml@${var.prod_apply_branch_ref}"
+      job_test = "StringEquals"
     }
     "ss-gh-backup-prod" = {
-      sub = ["repo:${local.repo}:environment:backup-prod"]
-      job = "${local.repo}/.github/workflows/backup-prod.yml@${var.prod_apply_branch_ref}"
+      sub      = ["repo:${local.repo}:environment:backup-prod"]
+      job      = "${local.repo}/.github/workflows/backup-prod.yml@${var.prod_apply_branch_ref}"
+      job_test = "StringEquals"
     }
     "ss-gh-drift-prod" = {
-      sub = ["repo:${local.repo}:environment:prod-plan"]
-      job = "${local.repo}/.github/workflows/drift.yml@${var.prod_apply_branch_ref}"
+      sub      = ["repo:${local.repo}:environment:prod-plan"]
+      job      = "${local.repo}/.github/workflows/drift.yml@${var.prod_apply_branch_ref}"
+      job_test = "StringEquals"
     }
   }
 }
@@ -489,7 +493,7 @@ data "aws_iam_policy_document" "trust" {
     dynamic "condition" {
       for_each = each.value.job == null ? [] : [each.value.job]
       content {
-        test     = "StringEquals"
+        test     = each.value.job_test
         variable = "${local.oidc_host}:job_workflow_ref"
         values   = [condition.value]
       }
@@ -504,14 +508,14 @@ resource "aws_iam_role" "gh" {
   max_session_duration = 3600
 }
 
-# backup role: PutObject on daily/ only, one KMS action, one SSM parameter. Nothing else.
+# backup role: PutObject on daily/ only, three KMS actions on the backup key, one SSM parameter. Nothing else.
 data "aws_iam_policy_document" "backup_role" {
   statement {
     actions   = ["s3:PutObject", "s3:PutObjectRetention"]
     resources = ["${aws_s3_bucket.backup.arn}/daily/*"]
   }
   statement {
-    actions   = ["kms:GenerateDataKey", "kms:Encrypt"]
+    actions   = ["kms:GenerateDataKey", "kms:Encrypt", "kms:Decrypt"] # Decrypt is required for multipart uploads to SSE-KMS
     resources = [aws_kms_key.backup.arn]
   }
   statement {
@@ -525,23 +529,24 @@ resource "aws_iam_role_policy" "backup" {
   policy = data.aws_iam_policy_document.backup_role.json
 }
 
-# drift/freshness role: list+head on backups, read its own token.
+# drift/freshness role: list the daily/ prefix only (LastModified is in the listing). No object reads, no decrypt, so it cannot read backup contents.
 data "aws_iam_policy_document" "drift_role" {
   statement {
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.backup.arn]
-  }
-  statement {
-    actions   = ["s3:GetObject", "s3:GetObjectAttributes"]
-    resources = ["${aws_s3_bucket.backup.arn}/daily/*"]
-  }
-  statement {
-    actions   = ["kms:Decrypt"]
-    resources = [aws_kms_key.backup.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["daily/*", "daily/"]
+    }
   }
   statement {
     actions   = ["ssm:GetParameter"]
     resources = [aws_ssm_parameter.cf_drift_read_token.arn]
+  }
+  statement {
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.backup.arn] # token decrypt only; the role has no object read, so this cannot reach backup contents
   }
 }
 resource "aws_iam_role_policy" "drift" {
@@ -554,5 +559,23 @@ resource "aws_iam_role_policy" "drift" {
 resource "aws_iam_role_policy_attachment" "plan_ro" {
   role       = aws_iam_role.gh["ss-gh-plan"].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/ReadOnlyAccess"
+}
+# Explicit deny: a PR-triggered role never reads backup contents or uses the backup key, whatever is attached later.
+data "aws_iam_policy_document" "plan_deny" {
+  statement {
+    effect    = "Deny"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${aws_s3_bucket.backup.arn}/*"]
+  }
+  statement {
+    effect    = "Deny"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+    resources = [aws_kms_key.backup.arn]
+  }
+}
+resource "aws_iam_role_policy" "plan_deny" {
+  name   = "plan-deny-backup-data"
+  role   = aws_iam_role.gh["ss-gh-plan"].id
+  policy = data.aws_iam_policy_document.plan_deny.json
 }
 # apply role scope is finalised at checkpoint 3 after the first real plan shows the exact actions needed.

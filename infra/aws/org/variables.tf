@@ -4,10 +4,12 @@ variable "member_account_ids" {
   description = "shared, identity-prod, identity-nonprod account IDs (kept out of the repo)"
 }
 variable "log_bucket" {
+  sensitive   = true
   type        = string
   description = "Output of aws/shared (CloudTrail destination)"
 }
 variable "alerts_topic_arn" {
+  sensitive   = true
   type        = string
   description = "SNS topic in the shared account. Its policy (aws/shared) allows events.amazonaws.com from the management account."
 }
