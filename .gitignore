@@ -1,0 +1,28 @@
+# dependencies and build output
+node_modules/
+dist/
+coverage/
+.vite/
+
+# local environment and secrets (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.hex
+*.secret
+.dev.vars
+
+# Python virtualenvs (CI tooling)
+.venv/
+__pycache__/
+
+# editors and OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+.tools/

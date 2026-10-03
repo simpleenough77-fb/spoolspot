@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SpoolSpot location seed",
+  "description": "A starting location tree for a SpoolSpot instance. Structural rules only; referential rules (unique ids, parents exist, no cycles, unique tag ids) are checked by scripts/lib/seed.ts. Licensed CC0-1.0 (see REUSE.toml).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated", "locations"],
+  "properties": {
+    "version": {
+      "description": "Version of the seed format, MAJOR.MINOR.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "generated": {
+      "description": "Date the file was generated (YYYY-MM-DD).",
+      "type": "string",
+      "format": "date"
+    },
+    "locations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/location" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "description": "Stable, human-readable location id. Lowercase letters, digits, dots and hyphens.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "type",
+        "parent",
+        "leaf",
+        "capacity",
+        "capacity_mode",
+        "prefers_manufacturer",
+        "tag_id",
+        "tag_source"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "type": {
+          "description": "container holds other locations; the other four types are leaves that hold items.",
+          "enum": ["container", "passive_storage", "active_storage", "active_use", "clip_storage"]
+        },
+        "parent": {
+          "description": "Id of the parent location, or null for the single root.",
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "leaf": { "type": "boolean" },
+        "capacity": {
+          "description": "Maximum number of units (spool places) at a leaf; null when not set or for containers.",
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "capacity_mode": {
+          "description": "hard: never suggest going over. soft: may be exceeded with a notice. null for containers.",
+          "enum": ["hard", "soft", null]
+        },
+        "prefers_manufacturer": {
+          "description": "Optional hint for placement suggestions. Never enforced.",
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "tag_id": {
+          "description": "12 random characters from the Crockford base32 alphabet, uppercase; null until a tag is assigned. Carries no personal data.",
+          "oneOf": [{ "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{12}$" }, { "type": "null" }]
+        },
+        "tag_source": {
+          "description": "Where the tag is attached: a sticker, or an NFC pocket on a clip-holder post. null for containers.",
+          "enum": ["sticker", "holder_post", null]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "container" } }, "required": ["type"] },
+          "then": {
+            "properties": {
+              "leaf": { "const": false },
+              "capacity": { "type": "null" },
+              "capacity_mode": { "type": "null" },
+              "tag_id": { "type": "null" },
+              "tag_source": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "leaf": { "const": true },
+              "capacity_mode": { "enum": ["hard", "soft"] },
+              "tag_source": { "enum": ["sticker", "holder_post"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "active_use" } }, "required": ["type"] },
+          "then": {
+            "properties": {
+              "capacity": { "const": 1 },
+              "capacity_mode": { "const": "hard" },
+              "tag_source": { "const": "holder_post" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

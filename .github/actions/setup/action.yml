@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Set up Node and pnpm
+description: Install the pinned Node runtime and the pnpm version pinned by package.json, then install dependencies from the lockfile.
+inputs:
+  node-version:
+    description: Node version. Empty means use .node-version.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        node-version-file: ${{ inputs.node-version == '' && '.node-version' || '' }}
+        package-manager-cache: false
+    - name: Install the pinned pnpm (hash checked against package.json)
+      shell: bash
+      run: sh scripts/install-pnpm.sh
+    - name: Install dependencies (frozen lockfile, no lifecycle scripts)
+      shell: bash
+      run: pnpm install --frozen-lockfile --ignore-scripts

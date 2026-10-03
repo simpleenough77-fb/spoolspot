@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Feature request
+description: Suggest a change. The tool tracks where things are, not how much is left.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Which question about your filament would this answer?
+      description: Do I have it and where, what is loaded where, do I need to order, where should it go, can I print this.
+    validations:
+      required: true
+  - type: textarea
+    id: tap
+    attributes:
+      label: How would it be set by a tap or derived from known data?
+      description: Fields that need typing must be justified.
+    validations:
+      required: true

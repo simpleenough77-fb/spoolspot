@@ -1,0 +1,11 @@
+{
+  "name": "SpoolSpot",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "24.21.0", "pnpmVersion": "none" }
+  },
+  "postCreateCommand": "sh scripts/install-pnpm.sh && pnpm install --frozen-lockfile --ignore-scripts && pnpm hooks:install && sh scripts/install-gitleaks.sh",
+  "customizations": {
+    "vscode": { "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"] }
+  }
+}

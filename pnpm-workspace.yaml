@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# pnpm settings. There are no workspace packages yet; this file only carries
+# supply-chain settings (ADR-0003 decision 9, ADR-0002 decision 7).
+
+# Refuse versions published less than 24 hours ago (limits exposure to freshly
+# compromised releases). Minutes.
+minimumReleaseAge: 1440
+
+# Refuse transitive dependencies that come from git or tarball URLs.
+blockExoticSubdeps: true
+
+# Fail if a package's provenance/trust level is lower than an earlier release.
+trustPolicy: no-downgrade
+
+# Dependency lifecycle scripts are not run. Add a package to onlyBuiltDependencies
+# only after a reviewed, justified exception (see CONTRIBUTING.md, dependency policy).
+onlyBuiltDependencies: []
+
+# Reviewed exceptions to trustPolicy (package@version). Each needs a reason and an
+# expiry; see the dependency policy in CONTRIBUTING.md.
+# undici-types@6.21.0: type-only dev dependency (via @types/node) whose provenance level dropped
+# between releases. Approved by Avi 2026-10-02; expires 2026-12-31 (re-check, then remove).
+trustPolicyExclude:
+  - undici-types@6.21.0

@@ -1,0 +1,17 @@
+version = 1
+
+# Later annotations override earlier ones: the catch-all comes first.
+[[annotations]]
+path = "**"
+SPDX-FileCopyrightText = "SpoolSpot contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = ["docs/**", "README.md", "CONTRIBUTING.md", "SECURITY.md", "CLAUDE.md", "CODE_OF_CONDUCT.md", "**/README.md"]
+SPDX-FileCopyrightText = "SpoolSpot contributors"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+path = ["seed/**", "schema/**"]
+SPDX-FileCopyrightText = "SpoolSpot contributors"
+SPDX-License-Identifier = "CC0-1.0"

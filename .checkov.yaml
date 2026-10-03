@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Checkov configuration. Skips must carry a reason and follow the exception rule in
+# CONTRIBUTING.md (a written risk acceptance with owner and expiry).
+framework:
+  - dockerfile
+  - github_actions
+  - terraform
+  - cloudformation
+quiet: true
+compact: true
+skip-path:
+  - node_modules
+  - .git

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extends the default gitleaks rules. Allowlists need a reason and follow the exception rule.
+title = "SpoolSpot gitleaks configuration"
+
+[extend]
+useDefault = true

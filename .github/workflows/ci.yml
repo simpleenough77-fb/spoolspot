@@ -1,0 +1,310 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Every gate runs on every pull request. The single required status check is "ci-gate",
+# which fails unless every job below succeeded (infra/github/ruleset-main.json).
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 1' # weekly: re-run audits and CodeQL against new advisories and queries
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  policy:
+    name: Ticket key and DCO
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out (full history for the commit range)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Branch name and PR title carry a SPOOL key
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: node scripts/check-pr-meta.ts
+      - name: Every commit has a SPOOL key and a DCO sign-off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-commits.ts
+
+  quality:
+    name: Lint, types, tests, seed schema
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Seed file validates against its JSON Schema
+        run: pnpm seed:validate
+      - name: Workflows are pinned by SHA with no top-level write
+        run: pnpm check:actions-pinned
+      - name: Source files carry SPDX headers
+        run: node scripts/check-spdx.ts
+
+  node-compat:
+    name: Tests on the oldest supported Node LTS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup
+        with:
+          node-version: '22'
+      - run: pnpm test
+
+  dependencies:
+    name: Dependency audit and license policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup
+      - name: Known vulnerabilities (high and critical fail)
+        run: pnpm audit:deps
+      - name: Licenses meet ADR-0002
+        run: pnpm check:licenses
+
+  dependency-review:
+    name: Dependency review (new vulnerable dependencies)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          license-check: false # licenses are enforced from the lockfile by pnpm check:licenses
+          comment-summary-in-pr: never
+
+  osv:
+    name: OSV-Scanner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install osv-scanner v2.6.0 (checksum pinned here, reviewed in the PR)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64"
+          echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+      - name: Scan the lockfile
+        run: ./osv-scanner scan source --lockfile=pnpm-lock.yaml
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks v8.30.1 (checksum pinned here, reviewed in the PR)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+      - name: Scan the pull request commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./gitleaks git --no-banner --redact --verbose --log-opts="${BASE_SHA}..${HEAD_SHA}"
+      - name: Scan the full history
+        if: github.event_name != 'pull_request'
+        run: ./gitleaks git --no-banner --redact --verbose
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate the SBOM from the lockfile
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+          dependency-snapshot: false
+      - name: The SBOM lists components
+        run: |
+          set -euo pipefail
+          count="$(jq '.components | length' sbom.cdx.json)"
+          echo "SBOM components: ${count}"
+          test "${count}" -gt 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          retention-days: 90
+
+  iac:
+    name: IaC, workflow and container scans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Install Checkov from hash-pinned requirements
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/checkov-venv"
+          "${RUNNER_TEMP}/checkov-venv/bin/pip" install --quiet --require-hashes -r infra/ci/requirements.txt
+      - name: Checkov (Dockerfile, GitHub Actions, Terraform, CloudFormation)
+        run: |
+          "${RUNNER_TEMP}/checkov-venv/bin/checkov" --directory . --config-file .checkov.yaml
+      - name: Container image scan (inactive until a Dockerfile exists)
+        if: hashFiles('**/Dockerfile') != ''
+        run: |
+          set -euo pipefail
+          echo "A Dockerfile exists: the image scan must be wired in before merging (see CONTRIBUTING.md)."
+          exit 1
+
+  a11y:
+    name: Accessibility (axe-core, WCAG 2.2 A and AA)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup
+      - name: Scan pages with the Chrome installed on the runner
+        run: pnpm a11y
+
+  workflow-lint:
+    name: Workflow security lint (zizmor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: javascript-typescript,actions
+          build-mode: none
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:javascript-typescript-and-actions
+
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - policy
+      - quality
+      - node-compat
+      - dependencies
+      - dependency-review
+      - osv
+      - secrets
+      - sbom
+      - iac
+      - a11y
+      - workflow-lint
+      - codeql
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Every job succeeded (policy and dependency-review are skipped outside pull requests)
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          echo "${NEEDS}" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          allowed_skips='[]'
+          if [ "${EVENT}" != "pull_request" ]; then
+            allowed_skips='["policy","dependency-review"]'
+          fi
+          bad="$(echo "${NEEDS}" | jq -r --argjson skips "${allowed_skips}" \
+            'to_entries[] | select(.value.result != "success" and ((.value.result == "skipped" and (.key as $k | $skips | index($k))) | not)) | .key')"
+          if [ -n "${bad}" ]; then
+            echo "::error::Failed or unexpectedly skipped: ${bad}"
+            exit 1
+          fi

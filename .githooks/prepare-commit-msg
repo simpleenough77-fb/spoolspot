@@ -1,0 +1,4 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Adds the DCO Signed-off-by trailer automatically (ADR-0002).
+exec sh "$(git rev-parse --show-toplevel)/scripts/prepare-commit-msg.sh" "$@"

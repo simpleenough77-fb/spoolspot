@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+dist/
+pnpm-lock.yaml
+# Third-party license and conduct texts are kept verbatim.
+LICENSE
+LICENSES/
+CODE_OF_CONDUCT.md
+# Data files are kept byte-exact.
+seed/

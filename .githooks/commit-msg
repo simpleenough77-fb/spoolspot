@@ -1,0 +1,5 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Rejects a commit message without a SPOOL key or a DCO sign-off (same rules as CI).
+set -eu
+exec node "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.ts" "$1"

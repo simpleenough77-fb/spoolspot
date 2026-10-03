@@ -1,0 +1,13 @@
+{
+  "exceptions": [
+    {
+      "package": "minimatch@10.2.6",
+      "license": "BlueOak-1.0.0",
+      "reason": "Permissive license; transitive development dependency of ESLint, never shipped in a release artifact.",
+      "owner": "Avi",
+      "approved_by": "Avi, 2026-10-02 (Chat 1 checkpoint)",
+      "ref": "ADR-0002 addendum (to be written after approval as a Confluence write)",
+      "expires": "2026-12-31"
+    }
+  ]
+}
