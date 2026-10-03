@@ -41,3 +41,7 @@ SemVer, `0.y.z` until 1.0. Releases are annotated `vX.Y.Z` tags on `main` (tags 
 ## GitHub settings as code
 
 `infra/github/` holds the repository ruleset and the script that applies the settings. See its README.
+
+## Jira linking
+
+Jira links work from the ticket key: a branch named `SPOOL-<n>-...`, a commit subject, or a pull request title containing `SPOOL-<n>` appears in that ticket's Development panel once the GitHub for Jira app is connected to the repository. CI rejects a pull request whose branch or title has no key.
