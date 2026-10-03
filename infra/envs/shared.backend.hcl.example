@@ -1,0 +1,6 @@
+# Copy to envs/shared.backend.hcl (gitignored); pass with: tofu init -backend-config=../../envs/shared.backend.hcl
+bucket       = "ss-tfstate-REPLACE-ACCOUNT-ID"
+region       = "us-east-1"
+use_lockfile = true
+encrypt      = true
+kms_key_id   = "alias/ss-state"
