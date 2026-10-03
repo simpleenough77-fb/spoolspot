@@ -23,6 +23,7 @@ An open-source, location-first filament inventory that works with Filament Clip 
 
 - Jira project SPOOL runs all development. Nothing is built without a ticket; new work found mid-task becomes a new ticket, not extra scope. Stories carry acceptance criteria (including security and accessibility) before work starts.
 - Branch `SPOOL-<n>-short-description`; commits `type(scope): SPOOL-<n> summary`, signed off (`git commit -s`); PR titles carry the key; the PR description links the ticket and the relevant documentation page.
+- Review model: the sole maintainer merges their own PRs (ruleset requires 0 approving reviews; `ci-gate` and resolved threads still apply). Claude-authored code is therefore untrusted until its gates pass; never merge or push without the owner's approval. A second reviewer is planned before the hosted tier accepts real users.
 - Move tickets Backlog, Selected for development, In Progress, In Review, Done as work happens (Kanban limits: In Progress 2, In Review 3).
 - Documentation of record lives in the project's Confluence space; this repo carries only public-facing docs. **Never put pricing, finances, security findings or sensitive runbook detail in the repo.**
 - Jira and Confluence writes are live writes: show the exact content and wait for approval before creating or editing; read back to verify; never delete pages or tickets; never change workspace settings, permissions or billing.

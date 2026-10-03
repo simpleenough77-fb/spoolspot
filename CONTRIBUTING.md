@@ -15,7 +15,7 @@ Thanks for helping. This project is small and security-minded, so the rules belo
 3. Commit subject: `type(scope): SPOOL-<n> summary`, where type is one of `feat fix docs style refactor perf test build ci chore revert`. Example: `feat(schema): SPOOL-22 add location schema`.
 4. Every commit is signed off: `git commit -s` (the Developer Certificate of Origin 1.1, https://developercertificate.org). The `prepare-commit-msg` hook adds the trailer for you.
 5. Pull request title carries the key too; the description links the ticket and the relevant documentation page. Keep PRs small, with tests.
-6. Merges are rebase-only after the `ci-gate` check passes and the code owner approves. No bypass.
+6. Merges are rebase-only after the `ci-gate` check passes. No bypass. While the project has a single maintainer, the maintainer merges their own pull requests, so the ruleset requires no approving review; the passing gate and resolved review threads are the enforced controls. Pull requests from other contributors are reviewed by the maintainer before merge. A second reviewer is planned before the hosted tier accepts real users.
 
 ## Local setup
 
