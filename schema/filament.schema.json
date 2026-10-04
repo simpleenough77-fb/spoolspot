@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SpoolSpot filament",
+  "description": "A filament is manufacturer, type and colour; a spool and its filament are one thing for ordering (ADR-0006). The tenant is implied by the caller and is never part of the document. Licensed CC0-1.0 (see REUSE.toml).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "manufacturer", "type", "color", "spool_kind", "reorder_level", "auto_level"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "manufacturer": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "type": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "color": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "spool_kind": {
+      "description": "refillable spools can be refilled from spoolless packs; disposable spools are tossed when empty.",
+      "enum": ["refillable", "disposable"]
+    },
+    "reorder_level": {
+      "description": "How heavily the filament is used. A choice the user makes (or the automatic level makes), never a measurement. Sets the reorder threshold (ADR-0006).",
+      "enum": ["low", "moderate", "high"]
+    },
+    "auto_level": {
+      "description": "When true, the level adjusts automatically. Off by default; choosing a level by hand turns it off.",
+      "type": "boolean"
+    }
+  }
+}

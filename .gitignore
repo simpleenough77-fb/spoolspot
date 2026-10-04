@@ -26,3 +26,6 @@ __pycache__/
 !.vscode/extensions.json
 *.log
 .tools/
+
+# local database (never commit)
+/data/

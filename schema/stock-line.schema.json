@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SpoolSpot stock line",
+  "description": "Boxed or bagged stock: a count per filament, location and pack type. Counts only. The tenant is implied by the caller and is never part of the document. Licensed CC0-1.0 (see REUSE.toml).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "filament_id", "location_id", "pack", "count"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "filament_id": { "type": "string", "format": "uuid" },
+    "location_id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+    },
+    "pack": {
+      "description": "spool is a boxed spool; refill is a spoolless pack and is only valid for a refillable filament.",
+      "enum": ["spool", "refill"]
+    },
+    "count": { "type": "integer", "minimum": 0, "maximum": 10000 }
+  }
+}
