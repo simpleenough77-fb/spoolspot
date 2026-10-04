@@ -63,6 +63,15 @@ export function createApp(options: AppOptions): Hono<Env> {
     if (c.req.path.startsWith('/api/')) c.header('Cache-Control', 'no-store');
   });
 
+  // Hono hands only Error instances to onError; normalise anything else so it gets the generic 500.
+  app.use('*', async (_c, next) => {
+    try {
+      await next();
+    } catch (error) {
+      throw error instanceof Error ? error : new Error('non-error value thrown');
+    }
+  });
+
   app.use('*', async (c, next) => {
     const host = hostName(c.req.header('host'));
     if (host === null || !allowed.has(host)) {
@@ -91,7 +100,16 @@ export function createApp(options: AppOptions): Hono<Env> {
 
   app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));
 
-  if (options.staticHandler) app.use('*', options.staticHandler);
+  const staticHandler = options.staticHandler;
+  if (staticHandler) {
+    app.use('*', async (c, next) => {
+      if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+        c.header('Allow', 'GET, HEAD');
+        return c.body(null, 405);
+      }
+      return staticHandler(c as Parameters<MiddlewareHandler>[0], next);
+    });
+  }
 
   app.onError((error, c) => {
     if (error instanceof ForbiddenError) return c.json({ error: 'forbidden' }, 403);

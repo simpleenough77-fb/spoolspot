@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Development preview: shows the location counts from /api/v1/locations/summary.
-// All text goes in with textContent (output encoding); the token stays in this tab's sessionStorage
-// and is only ever sent in an Authorization header, never in a URL.
+// All text goes in with textContent (output encoding); the token is never stored by this page (a
+// password manager can fill it) and is only ever sent in an Authorization header, never in a URL.
 (() => {
   const LABELS = {
     container: 'Containers (rooms, shelving, printers)',
@@ -10,7 +10,6 @@
     passive_storage: 'Passive storage (boxed)',
     clip_storage: 'Clip storage',
   };
-  const KEY = 'spoolspot-dev-token';
 
   const form = document.getElementById('token-form');
   const input = document.getElementById('token');
@@ -19,22 +18,6 @@
   const rows = document.getElementById('summary-rows');
   const total = document.getElementById('summary-total');
   if (!form || !input || !status || !table || !rows || !total) return;
-
-  function stored() {
-    try {
-      return sessionStorage.getItem(KEY);
-    } catch {
-      return null;
-    }
-  }
-  function store(value) {
-    try {
-      if (value) sessionStorage.setItem(KEY, value);
-      else sessionStorage.removeItem(KEY);
-    } catch {
-      /* private mode: the token just is not remembered */
-    }
-  }
 
   function places(entry) {
     if (entry.type === 'container') return 'not applicable';
@@ -88,7 +71,6 @@
         cache: 'no-store',
       });
       if (response.status === 401) {
-        store(null);
         status.textContent = 'That token was not accepted. Check it and try again.';
         return;
       }
@@ -101,7 +83,6 @@
         status.textContent = 'The server sent data this page does not understand.';
         return;
       }
-      store(token);
       render(data);
       status.textContent = `Loaded ${data.total} locations.`;
     } catch {
@@ -115,7 +96,4 @@
     input.value = '';
     if (token) void load(token);
   });
-
-  const remembered = stored();
-  if (remembered) void load(remembered);
 })();

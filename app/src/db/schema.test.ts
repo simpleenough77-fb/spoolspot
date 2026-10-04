@@ -340,6 +340,128 @@ describe('event log', () => {
   });
 });
 
+describe('hardening (independent review)', () => {
+  it('rejects NUL bytes that would hide the rest of a value from CHECKs', () => {
+    const { db } = memoryDatabase();
+    expect(() => {
+      addTenant(db, `${TENANT_A}\u0000;`);
+    }).toThrow(/constraint/i);
+    addTenant(db, TENANT_A);
+    expect(() => {
+      addLocation(db, TENANT_A, 'shelf\u0000!!');
+    }).toThrow(/constraint/i);
+    addLocation(db, TENANT_A, 'shelf');
+    expect(() =>
+      db.prepare('UPDATE location SET name = ? WHERE id = ?').run('a\u0000b', 'shelf'),
+    ).toThrow(/constraint/i);
+    expect(() =>
+      db.prepare('UPDATE location SET tag_id = ? WHERE id = ?').run('0123456789AB\u0000', 'shelf'),
+    ).toThrow(/constraint/i);
+    expect(() => {
+      addFilament(db, TENANT_A, 'refillable', 'Bl\u0000ack');
+    }).toThrow(/constraint/i);
+  });
+
+  it('keeps multi-byte names working', () => {
+    const { db } = memoryDatabase();
+    addTenant(db, TENANT_A);
+    addLocation(db, TENANT_A, 'shelf');
+    expect(() =>
+      db.prepare('UPDATE location SET name = ? WHERE id = ?').run('Regal Küche ✓', 'shelf'),
+    ).not.toThrow();
+  });
+
+  it('agrees with the JSON Schema on location ids', () => {
+    const { db } = memoryDatabase();
+    addTenant(db, TENANT_A);
+    for (const bad of ['a..b', 'a--b', 'a.-b', '-a', 'a.']) {
+      expect(() => {
+        addLocation(db, TENANT_A, bad);
+      }, bad).toThrow(/constraint/i);
+    }
+    expect(() => {
+      addLocation(db, TENANT_A, 'a.b-c');
+    }).not.toThrow();
+  });
+
+  it('refuses a location that would become its own ancestor', () => {
+    const { db } = memoryDatabase();
+    addTenant(db, TENANT_A);
+    addLocation(db, TENANT_A, 'a', 'container');
+    addLocation(db, TENANT_A, 'b', 'container', 'a');
+    addLocation(db, TENANT_A, 'c', 'container', 'b');
+    expect(() => db.prepare("UPDATE location SET parent = 'c' WHERE id = 'a'").run()).toThrow(
+      /own ancestor/,
+    );
+    expect(() => db.prepare("UPDATE location SET parent = 'a' WHERE id = 'a'").run()).toThrow(
+      /own ancestor/,
+    );
+  });
+
+  it('keeps containers and leaves consistent when the type changes', () => {
+    const { db } = memoryDatabase();
+    addTenant(db, TENANT_A);
+    addLocation(db, TENANT_A, 'room', 'container');
+    addLocation(db, TENANT_A, 'shelf', 'passive_storage', 'room');
+    expect(() =>
+      db.prepare("UPDATE location SET leaf = 1, type = 'passive_storage' WHERE id = 'room'").run(),
+    ).toThrow(/must stay a container/);
+    const filament = addFilament(db, TENANT_A);
+    db.prepare(
+      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, 'shelf', 'spool', 1)",
+    ).run(TENANT_A, uuid(), filament);
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE location SET leaf = 0, type = 'container', capacity = NULL, capacity_mode = NULL, tag_source = NULL WHERE id = 'shelf'",
+        )
+        .run(),
+    ).toThrow(/must stay a leaf/);
+  });
+
+  it('places stock lines at leaves only', () => {
+    const { db } = memoryDatabase();
+    addTenant(db, TENANT_A);
+    addLocation(db, TENANT_A, 'room', 'container');
+    addLocation(db, TENANT_A, 'shelf', 'passive_storage', 'room');
+    const filament = addFilament(db, TENANT_A);
+    const insert = db.prepare(
+      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, ?, 'spool', 1)",
+    );
+    expect(() => insert.run(TENANT_A, uuid(), filament, 'room')).toThrow(/leaf/);
+    const id = uuid();
+    insert.run(TENANT_A, id, filament, 'shelf');
+    expect(() =>
+      db.prepare("UPDATE stock_line SET location_id = 'room' WHERE id = ?").run(id),
+    ).toThrow(/leaf/);
+  });
+
+  it('keeps a filament refillable while refill lines exist', () => {
+    const { db } = memoryDatabase();
+    addTenant(db, TENANT_A);
+    addLocation(db, TENANT_A, 'closet');
+    const filament = addFilament(db, TENANT_A, 'refillable');
+    db.prepare(
+      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, 'closet', 'refill', 1)",
+    ).run(TENANT_A, uuid(), filament);
+    expect(() =>
+      db.prepare("UPDATE filament SET spool_kind = 'disposable' WHERE id = ?").run(filament),
+    ).toThrow(/refill/i);
+  });
+
+  it('accepts only a strict UTC millisecond timestamp on events', () => {
+    const { db } = memoryDatabase();
+    addTenant(db, TENANT_A);
+    const insert = db.prepare(
+      "INSERT INTO event (tenant_id, id, type, occurred_at) VALUES (?, ?, 'intake', ?)",
+    );
+    expect(() => insert.run(TENANT_A, uuid(), '2026-10-04T12:00:00.000Z')).not.toThrow();
+    for (const bad of ['2026-10-04', '2026-10-04T12:00:00Z', '2026-10-04 12:00:00.000Z', '']) {
+      expect(() => insert.run(TENANT_A, uuid(), bad), bad).toThrow(/constraint/i);
+    }
+  });
+});
+
 describe('migration runner and database file', () => {
   const dirs: string[] = [];
   afterEach(() => {

@@ -5,7 +5,7 @@
 import { Scope, type AuthProvider, type Principal } from './principal.ts';
 
 export const MIN_TOKEN_LENGTH = 32;
-const MIN_DISTINCT_CHARACTERS = 8;
+const MIN_DISTINCT_CHARACTERS = 16;
 const BEARER = /^Bearer ([\x21-\x7e]+)$/i;
 
 export function checkDevToken(token: string): string | null {
