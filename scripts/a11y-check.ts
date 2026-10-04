@@ -82,6 +82,48 @@ function expectText(actual: string, expected: string, what: string): number {
   return 1;
 }
 
+/** WCAG 1.4.10 Reflow: at 320px wide with text enlarged, the page must not scroll sideways. */
+async function reflow(tab: Page, label: string): Promise<number> {
+  const size = tab.viewportSize();
+  await tab.setViewportSize({ width: 320, height: 700 });
+  await tab.evaluate(() => {
+    document.documentElement.style.fontSize = '200%';
+  });
+  // Let the resize and the new text size settle before measuring.
+  await tab.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+      }),
+  );
+  const overflow = await tab.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  const widest = await tab.evaluate(() =>
+    [...document.querySelectorAll('body *')]
+      .map((e) => ({ e, right: e.getBoundingClientRect().right }))
+      .sort((a, b) => b.right - a.right)
+      .slice(0, 3)
+      .map(
+        ({ e, right }) => `${e.tagName.toLowerCase()}#${e.id} right=${String(Math.round(right))}`,
+      )
+      .join(', '),
+  );
+  await tab.evaluate(() => {
+    document.documentElement.style.fontSize = '';
+  });
+  if (size) await tab.setViewportSize(size);
+  if (overflow <= 0) return 0;
+  console.error(
+    `::error::${label}: the page scrolls sideways by ${String(overflow)}px (widest: ${widest})`,
+  );
+  return 1;
+}
+
 async function axe(tab: Page, label: string): Promise<number> {
   const result = await new AxeBuilder({ page: tab }).withTags(TAGS).analyze();
   for (const v of result.violations) {
@@ -133,6 +175,7 @@ try {
     await tab.waitForSelector('#place-result:not(:empty)');
     await tab.waitForSelector('#tree li');
     violations += await axe(tab, `/ (${scheme}, tree collapsed)`);
+    violations += await reflow(tab, `/ (${scheme}, 320px wide, text at 200%, tree collapsed)`);
     // Collapsed containers must show a cue that they open: the summary marker is generated content.
     const cue = await tab
       .locator('#tree details:not([open]) > summary')
@@ -146,6 +189,7 @@ try {
       await closed.first().click();
     }
     violations += await axe(tab, `/ (${scheme}, tree expanded)`);
+    violations += await reflow(tab, `/ (${scheme}, 320px wide, text at 200%, tree expanded)`);
     violations += expectText(
       await tab.locator('#tree').innerText(),
       '6 free of 16 (10 used)',
