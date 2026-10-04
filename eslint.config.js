@@ -22,4 +22,8 @@ export default defineConfig([
     files: ['**/*.js'],
     languageOptions: { globals: globals.node },
   },
+  {
+    files: ['app/public/**/*.js'],
+    languageOptions: { globals: globals.browser },
+  },
 ]);
