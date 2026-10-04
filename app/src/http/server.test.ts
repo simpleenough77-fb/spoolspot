@@ -85,6 +85,12 @@ describe('real server', () => {
     expect(status).toBe(421);
   });
 
+  it('answers 405 with Allow for methods other than GET and HEAD on static paths', async () => {
+    const res = await fetch(`${base}/`, { method: 'POST', body: 'x' });
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET, HEAD');
+  });
+
   it.each([
     '/../package.json',
     '/%2e%2e/package.json',
