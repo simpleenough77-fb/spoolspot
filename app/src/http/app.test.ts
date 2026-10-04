@@ -203,6 +203,22 @@ describe('failure handling', () => {
     expect(String(error.mock.calls[0]?.[0])).toBe('request failed: TypeError');
   });
 
+  it('turns a thrown non-Error into a generic 500', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const app = createApp({
+      auth: createDevTokenProvider({ token: TEST_TOKEN, tenantId: TENANT_A }),
+      data: () => ({
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        locationSummary: () => Promise.reject('secret string 12345'),
+      }),
+      allowedHosts: HOSTS,
+    });
+    const res = await get(app, '/api/v1/locations/summary', bearer);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'internal' });
+    expect(JSON.stringify(error.mock.calls)).not.toContain('12345');
+  });
+
   it('never writes the token to the console', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);

@@ -15,7 +15,15 @@ function attempt<T>(fn: () => T): Promise<T> {
   }
 }
 
+/** Cloudflare D1 allows at most 100 bound parameters per statement; enforce it here so tests catch a breach. */
+const MAX_BOUND_PARAMETERS = 100;
+
 function bind(params: readonly SqlParam[] | undefined): SqlParam[] {
+  if (params && params.length > MAX_BOUND_PARAMETERS) {
+    throw new Error(
+      `a statement may bind at most ${String(MAX_BOUND_PARAMETERS)} parameters (D1 limit)`,
+    );
+  }
   return params ? [...params] : [];
 }
 
@@ -51,7 +59,11 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
           }
           db.exec('COMMIT');
         } catch (error) {
-          db.exec('ROLLBACK');
+          try {
+            db.exec('ROLLBACK');
+          } catch {
+            /* keep the original error: the rollback failure would hide the cause */
+          }
           throw error;
         }
       });

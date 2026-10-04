@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Node entry point. Usage: SPOOLSPOT_DEV_TOKEN=<32+ chars> node app/src/server.ts
 // DEV ONLY until SPOOL-175 lands: plain HTTP, one fixed token, no rate limiting.
+import { relative, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createDevTokenProvider } from './auth/dev-token.ts';
@@ -19,6 +20,14 @@ try {
   process.exit(1);
 }
 
+if (!isLoopback(config.host) && !config.allowLan) {
+  console.error(
+    `Refusing to listen on ${config.host}: this development build uses plain HTTP and one shared token. ` +
+      'Set SPOOLSPOT_ALLOW_LAN=1 to allow it on a trusted home network.',
+  );
+  process.exit(1);
+}
+
 const db = openDatabase(config.databasePath);
 const applied = runMigrations(db);
 const sql = sqlFromDatabase(db);
@@ -27,7 +36,9 @@ const app = createApp({
   auth,
   data: (principal) => createScopedData(sql, principal),
   allowedHosts: config.allowedHosts,
-  staticHandler: serveStatic({ root: './app/public' }),
+  staticHandler: serveStatic({
+    root: relative(process.cwd(), resolve(import.meta.dirname, '../public')) || '.',
+  }),
 });
 
 const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
