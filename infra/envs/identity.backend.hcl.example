@@ -1,0 +1,9 @@
+# Copy to infra/envs/identity-stg.backend.hcl AND infra/envs/identity-prod.backend.hcl (gitignored), one per env.
+# The state key is NOT set here: scripts/tofu-init.sh passes it. Values come from `tofu output` in infra/aws/shared:
+#   state_kms_key_arn, tfstate_identity_role_arns (use the entry for this env).
+bucket       = "ss-tfstate-REPLACE-SHARED-ACCOUNT-ID"
+region       = "us-east-1"
+use_lockfile = true
+encrypt      = true
+kms_key_id   = "arn:aws:kms:us-east-1:REPLACE-SHARED-ACCOUNT-ID:key/REPLACE-KEY-UUID"
+assume_role  = { role_arn = "arn:aws:iam::REPLACE-SHARED-ACCOUNT-ID:role/ss-tfstate-identity-REPLACE-ENV", session_name = "ss-tfstate" }

@@ -1,6 +1,8 @@
-# Copy to envs/shared.backend.hcl (gitignored); pass with: tofu init -backend-config=../../envs/shared.backend.hcl
+# Copy to infra/envs/shared.backend.hcl (gitignored). Used by bootstrap, aws/shared, aws/org and the Cloudflare stacks.
+# Do not put a key here: scripts/tofu-init.sh passes the state key for each stack and environment.
+# Identity stacks use identity.backend.hcl.example instead (they run in other accounts).
 bucket       = "ss-tfstate-REPLACE-ACCOUNT-ID"
 region       = "us-east-1"
 use_lockfile = true
 encrypt      = true
-kms_key_id   = "alias/ss-state"
+kms_key_id   = "alias/ss-state" # fine here: these stacks run in the Shared account, where the alias resolves

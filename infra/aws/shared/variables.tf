@@ -35,3 +35,16 @@ variable "mgmt_account_id" {
   type        = string
   description = "Management (payer) account id: its org-trail logs and EventBridge alerts are delivered here; kept out of tracked files"
 }
+variable "identity_account_ids" {
+  sensitive   = true
+  type        = map(string)
+  description = "Account IDs of the identity accounts by env: stg is identity-nonprod, prod is identity-prod. Used to build the state-access role trust (SPOOL-173). Gitignored tfvars only."
+  validation {
+    condition = (
+      toset(keys(var.identity_account_ids)) == toset(["stg", "prod"]) &&
+      alltrue([for v in values(var.identity_account_ids) : can(regex("^[0-9]{12}$", v))]) &&
+      length(distinct(values(var.identity_account_ids))) == 2
+    )
+    error_message = "identity_account_ids needs exactly the keys stg and prod, each a different 12-digit account ID."
+  }
+}

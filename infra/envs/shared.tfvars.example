@@ -5,3 +5,4 @@ org_id            = "o-xxxxxxxxxx"
 alert_email       = "<monitored mailbox, not on spoolspot.com>"
 state_bucket      = "ss-tfstate-<shared-account-id>"
 mgmt_account_id   = "<management (payer) account id>"
+identity_account_ids = { stg = "<identity-nonprod account id>", prod = "<identity-prod account id>" }
