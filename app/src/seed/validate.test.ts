@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { validateSeed } from './seed.ts';
+import { validateSeed } from './validate.ts';
 
 interface Loc {
   id: string;
@@ -21,9 +21,9 @@ interface Seed {
 }
 
 const schema = JSON.parse(
-  readFileSync(new URL('../../schema/locations-seed.schema.json', import.meta.url), 'utf8'),
+  readFileSync(new URL('../../../schema/locations-seed.schema.json', import.meta.url), 'utf8'),
 ) as object;
-const seedText = readFileSync(new URL('../../seed/locations-seed.json', import.meta.url), 'utf8');
+const seedText = readFileSync(new URL('../../../seed/locations-seed.json', import.meta.url), 'utf8');
 
 function freshSeed(): Seed {
   return JSON.parse(seedText) as Seed;
