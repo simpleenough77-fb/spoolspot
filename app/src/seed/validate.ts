@@ -10,14 +10,29 @@ export interface Issue {
   message: string;
 }
 
-interface SeedLocation {
+export type LocationType =
+  | 'container'
+  | 'passive_storage'
+  | 'active_storage'
+  | 'active_use'
+  | 'clip_storage';
+
+export interface SeedLocation {
   id: string;
+  name: string;
+  type: LocationType;
   parent: string | null;
   leaf: boolean;
+  capacity: number | null;
+  capacity_mode: 'hard' | 'soft' | null;
+  prefers_manufacturer: string | null;
   tag_id: string | null;
+  tag_source: 'sticker' | 'holder_post' | null;
 }
 
-interface SeedDocument {
+export interface SeedDocument {
+  version: string;
+  generated: string;
   locations: SeedLocation[];
 }
 
@@ -36,7 +51,7 @@ export function validateSeed(seed: unknown, schema: object): Issue[] {
 }
 
 /** Rules JSON Schema cannot express. Assumes the document already passed the schema. */
-export function referentialIssues(doc: SeedDocument): Issue[] {
+export function referentialIssues(doc: Pick<SeedDocument, 'locations'>): Issue[] {
   const issues: Issue[] = [];
   const byId = new Map<string, SeedLocation>();
   doc.locations.forEach((loc, i) => {

@@ -8,7 +8,7 @@ import { AxeBuilder } from '@axe-core/playwright';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { join, relative } from 'node:path';
+import { extname, join, relative } from 'node:path';
 import { chromium } from 'playwright-core';
 
 const root = 'app/public';
@@ -20,6 +20,17 @@ function htmlFiles(dir: string): string[] {
     if (statSync(full).isDirectory()) return htmlFiles(full);
     return full.endsWith('.html') ? [full] : [];
   });
+}
+
+// Browsers refuse a stylesheet served with the wrong type, which would make the contrast checks meaningless.
+const TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+};
+function contentType(file: string): string {
+  return TYPES[extname(file)] ?? 'application/octet-stream';
 }
 
 const pages = htmlFiles(root).map((f) => `/${relative(root, f)}`);
@@ -42,7 +53,7 @@ const server = createServer((req, res) => {
     res.writeHead(404).end();
     return;
   }
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.writeHead(200, { 'content-type': contentType(file) });
   res.end(body);
 });
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

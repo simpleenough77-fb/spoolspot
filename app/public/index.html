@@ -4,28 +4,54 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SpoolSpot</title>
-    <style>
-      body {
-        font-family: system-ui, sans-serif;
-        color: #1a1a1a;
-        background: #ffffff;
-        margin: 0;
-        padding: 1rem;
-        line-height: 1.5;
-      }
-      main {
-        max-width: 40rem;
-        margin: 0 auto;
-      }
-      a {
-        color: #0b4fb3;
-      }
-    </style>
+    <link rel="stylesheet" href="app.css" />
+    <script src="summary.js" defer></script>
   </head>
   <body>
     <main>
       <h1>SpoolSpot</h1>
-      <p>An open-source, location-first filament inventory. This page is a placeholder.</p>
+      <p>
+        Development preview: how many locations the app knows about, by type. This build uses plain
+        HTTP and a single development token. Use it only on your own network.
+      </p>
+
+      <form id="token-form" autocomplete="off">
+        <label for="token">Development token</label>
+        <input
+          id="token"
+          name="token"
+          type="password"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          required
+        />
+        <button type="submit">Show location counts</button>
+      </form>
+
+      <p id="status" role="status">Enter your development token to load the counts.</p>
+
+      <table id="summary" hidden>
+        <caption>
+          Locations by type
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Type</th>
+            <th scope="col">Locations</th>
+            <th scope="col">Places</th>
+          </tr>
+        </thead>
+        <tbody id="summary-rows"></tbody>
+        <tfoot>
+          <tr>
+            <th scope="row">All locations</th>
+            <td id="summary-total"></td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+
       <p><a href="https://github.com/simpleenough77-fb/spoolspot">Source code</a></p>
     </main>
   </body>
