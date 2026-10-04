@@ -1,4 +1,9 @@
 # Copy to envs/prod.auto.tfvars (gitignored). Values here are placeholders.
+# This folder is not the stack folder, so it does not auto-load: pass -var-file=../../envs/prod.auto.tfvars from infra/cloudflare/zone.
 zone_id            = "REPLACE"
 pi_private_ip      = "REPLACE"
 dmarc_rua          = "mailto:REPLACE@example.invalid"
+# First plan only (SPOOL-170): the LIVE resources to import. Clear all of them after the first apply.
+# t_record_id          = "REPLACE"   # the live t record; needs pi_private_ip
+# import_dnssec        = true        # DNSSEC is already active on the live zone
+# ratelimit_ruleset_id = "REPLACE"   # only if an http_ratelimit entrypoint ruleset already exists in the zone
