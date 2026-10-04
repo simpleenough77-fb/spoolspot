@@ -31,6 +31,15 @@ import {
   id       = each.value
 }
 
+# Enabling Email Routing creates its own apex SPF TXT record. Order: enable Email Routing, then set spf_record_id so it is
+# IMPORTED here (never created a second time), then read the plan: the content moves to the SPF value in this file, a
+# reviewed update. A zone must have exactly one SPF record at the apex.
+import {
+  for_each = var.spf_record_id == null ? toset([]) : toset([var.spf_record_id])
+  to       = cloudflare_dns_record.spf_apex
+  id       = "${var.zone_id}/${each.value}"
+}
+
 # ---------- DNSSEC ----------
 resource "cloudflare_zone_dnssec" "this" {
   zone_id = var.zone_id
@@ -52,6 +61,22 @@ resource "cloudflare_dns_record" "caa_issue" {
     value = each.value
   }
 }
+# issuewild mirrors issue. With no issuewild record, wildcard requests fall back to issue (RFC 8659), so this changes no
+# permission: it makes the wildcard policy explicit and stops a later issue-only edit from silently widening it.
+# Cloudflare also adds its own CAA records once any CAA exists (hidden in the dashboard; check with dig CAA after the
+# first staging apply, in case the API treats an identical record as a duplicate).
+resource "cloudflare_dns_record" "caa_issuewild" {
+  for_each = toset(var.caa_issuers)
+  zone_id  = var.zone_id
+  name     = var.zone_name
+  type     = "CAA"
+  ttl      = 3600
+  data = {
+    flags = 0
+    tag   = "issuewild"
+    value = each.value
+  }
+}
 resource "cloudflare_dns_record" "caa_iodef" {
   zone_id = var.zone_id
   name    = var.zone_name
@@ -64,6 +89,10 @@ resource "cloudflare_dns_record" "caa_iodef" {
   }
 }
 # Bind the Pi's certificate to your ACME account, DNS-01 only (even a stolen DNS token cannot get a cert).
+# PHASE 2 (t proxied by Cloudflare): the closest CAA wins, so this record governs any certificate issued for t itself
+# (Advanced Certificate Manager, a Workers custom-domain certificate, Total TLS). The Universal certificate covers
+# *.<zone> and is validated against the apex, so it is NOT affected. Before phase 2, confirm which certificate serves t;
+# set acme_account_uri to null (the plan destroys this record) only if t gets its own certificate.
 resource "cloudflare_dns_record" "caa_t_accounturi" {
   count   = var.acme_account_uri == null ? 0 : 1
   zone_id = var.zone_id
@@ -108,6 +137,8 @@ resource "cloudflare_dns_record" "spf_apex" {
   content = "\"v=spf1 include:_spf.mx.cloudflare.net -all\"" # [U] include needed for Email Routing forwarding
   ttl     = 3600
 }
+# DELIBERATE DEVIATION from the p=none-first baseline: the apex never sends mail (SPF -all), so p=reject cannot cause a
+# false rejection of our own mail. The sending subdomain starts at p=none (dmarc_mail below).
 resource "cloudflare_dns_record" "dmarc" {
   zone_id = var.zone_id
   name    = "_dmarc.${var.zone_name}"
@@ -151,6 +182,15 @@ resource "cloudflare_dns_record" "dmarc_mail" {
   type    = "TXT"
   content = "\"v=DMARC1; p=none; rua=${var.dmarc_rua}\"" # raise to reject after two clean weeks
   ttl     = 3600
+}
+
+# DMARC reports sent to a mailbox in another organizational domain are only delivered if that domain publishes
+# <zone>._report._dmarc.<its domain> TXT "v=DMARC1" (RFC 7489 section 7.1). This warns, it does not fail the plan.
+check "dmarc_rua_authorization" {
+  assert {
+    condition     = endswith(lower(var.dmarc_rua), "@${var.zone_name}") || endswith(lower(var.dmarc_rua), ".${var.zone_name}")
+    error_message = "dmarc_rua is in another domain: that domain must publish ${var.zone_name}._report._dmarc.<its domain> TXT \"v=DMARC1\" or aggregate reports may be dropped."
+  }
 }
 
 # ---------- TLS and edge settings ----------

@@ -7,7 +7,7 @@ mock_provider "cloudflare" {}
 variables {
   zone_id       = "0123456789abcdef0123456789abcdef"
   pi_private_ip = "192.168.10.20"
-  dmarc_rua     = "mailto:dmarc@example.invalid"
+  dmarc_rua     = "mailto:dmarc@spoolspot.com" # in the default zone_name: the DMARC authorization check passes
 }
 
 run "baseline_is_valid" {
@@ -82,6 +82,7 @@ run "resolver_host_inside_zone" {
   variables {
     zone_name     = "example.invalid"
     resolver_host = "t.example.invalid"
+    dmarc_rua     = "mailto:dmarc@example.invalid"
   }
 }
 
@@ -89,6 +90,7 @@ run "resolver_host_outside_zone_is_rejected" {
   command = plan
   variables {
     zone_name     = "example.invalid"
+    dmarc_rua     = "mailto:dmarc@example.invalid"
     resolver_host = "t.other.invalid"
   }
   expect_failures = [var.resolver_host]
@@ -98,6 +100,7 @@ run "resolver_host_lookalike_suffix_is_rejected" {
   command = plan
   variables {
     zone_name     = "example.invalid"
+    dmarc_rua     = "mailto:dmarc@example.invalid"
     resolver_host = "tnotexample.invalid"
   }
   expect_failures = [var.resolver_host]
@@ -158,6 +161,7 @@ run "resolver_host_rejects_empty_label" {
   command = plan
   variables {
     zone_name     = "example.invalid"
+    dmarc_rua     = "mailto:dmarc@example.invalid"
     resolver_host = ".example.invalid"
   }
   expect_failures = [var.resolver_host]
@@ -167,6 +171,7 @@ run "resolver_host_rejects_uppercase" {
   command = plan
   variables {
     zone_name     = "example.invalid"
+    dmarc_rua     = "mailto:dmarc@example.invalid"
     resolver_host = "T.example.invalid"
   }
   expect_failures = [var.resolver_host]
@@ -176,4 +181,49 @@ run "dmarc_rua_needs_an_at_sign" {
   command = plan
   variables { dmarc_rua = "mailto:dmarc" }
   expect_failures = [var.dmarc_rua]
+}
+
+run "caa_issuers_rejects_parameters" {
+  command = plan
+  variables { caa_issuers = ["pki.goog; cansignhttpexchanges=yes"] }
+  expect_failures = [var.caa_issuers]
+}
+
+run "caa_issuers_rejects_empty_list" {
+  command = plan
+  variables { caa_issuers = [] }
+  expect_failures = [var.caa_issuers]
+}
+
+run "caa_issuers_default_excludes_digicert" {
+  command = plan
+  assert {
+    condition     = !contains(keys(cloudflare_dns_record.caa_issue), "digicert.com")
+    error_message = "digicert.com is not on Cloudflare's CA list"
+  }
+}
+
+run "caa_issuewild_mirrors_issue" {
+  command = plan
+  assert {
+    condition     = length(cloudflare_dns_record.caa_issuewild) == length(cloudflare_dns_record.caa_issue)
+    error_message = "issuewild must cover the same CAs as issue"
+  }
+}
+
+run "spf_record_id_must_be_32_hex" {
+  command = plan
+  variables { spf_record_id = "abc" }
+  expect_failures = [var.spf_record_id]
+}
+
+run "dmarc_rua_in_another_domain_warns" {
+  command = plan
+  variables { dmarc_rua = "mailto:reports@elsewhere.invalid" }
+  expect_failures = [check.dmarc_rua_authorization]
+}
+
+run "dmarc_rua_on_a_subdomain_of_the_zone_is_allowed" {
+  command = plan
+  variables { dmarc_rua = "mailto:Reports@Mail.SpoolSpot.com" }
 }

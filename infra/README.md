@@ -70,6 +70,14 @@ First plan (SPOOL-170): run `scripts/dns-export.sh`, then in the gitignored tfva
 
 Identity stacks: `AWS_PROFILE=ss-id-nonprod scripts/tofu-init.sh aws/identity stg`, then plan from `infra/aws/identity` with the same profile. Switching env means running the script again for the other env.
 
+DNS hardening (SPOOL-171), zone stack:
+
+- CAA: `issue` and `issuewild` allow only Cloudflare's Universal SSL CAs plus its backup CA (Let's Encrypt, Google Trust Services, SSL.com, Sectigo). Source: Cloudflare docs (SSL, certificate authorities and CAA records), checked 2026-10-04; the list is not exhaustive, so re-check before each apply. `issuewild` mirrors `issue` (without it, wildcard requests fall back to `issue` anyway, so it only makes the policy explicit). Cloudflare adds its own CAA records once any CAA exists; they do not show in the dashboard. After the first staging apply, run `dig CAA` and confirm there are no duplicate or rejected records.
+- Email Routing and SPF: enable Email Routing first, then run `dig +short TXT <zone>` and set `spf_record_id` to the SPF record it created, so the record is imported. **Never apply with Email Routing enabled and `spf_record_id` unset**: that creates a second apex SPF record, which is an SPF permerror, and the Cloudflare API does not reject duplicates. The first plan shows an in-place update of that record (content moves to this file's SPF value, TTL moves to 3600); read it before approving. Email Routing's MX records are not managed here. Clear `spf_record_id` after the first apply.
+- TXT quoting: the quoted TXT `content` form is unproven against the provider. In staging, after the first apply, a second plan must show no changes for the SPF, DMARC and bounce SPF records. If it shows a diff, fix the quoting before production.
+- DMARC: the apex is `p=reject` on purpose (the apex never sends mail). If `dmarc_rua` is in another domain, the plan prints a warning: that domain must publish `<zone>._report._dmarc.<its domain>` TXT `"v=DMARC1"`.
+- Phase 2 (resolver proxied by Cloudflare): the account-bound CAA on `t` governs any certificate issued for `t` itself (Advanced Certificate Manager, a Workers custom-domain certificate, Total TLS). The Universal certificate covers the wildcard and is validated at the apex, so it is not affected. Confirm which certificate serves `t` first. Set `acme_account_uri = null` (the plan then destroys that record) only if `t` gets its own certificate.
+
 ## Local checks
 
 `tofu fmt -check -recursive && tofu validate` in each stack (after `tofu init -backend=false`), `tofu test` in stacks that have a `tests/` folder (offline, mocked provider), then `checkov -d infra`.

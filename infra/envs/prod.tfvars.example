@@ -6,4 +6,5 @@ dmarc_rua          = "mailto:REPLACE@example.invalid"
 # First plan only (SPOOL-170): the LIVE resources to import. Clear all of them after the first apply.
 # t_record_id          = "REPLACE"   # the live t record; needs pi_private_ip
 # import_dnssec        = true        # DNSSEC is already active on the live zone
+# spf_record_id        = "REPLACE"   # the apex SPF TXT that Email Routing created (SPOOL-171)
 # ratelimit_ruleset_id = "REPLACE"   # only if an http_ratelimit entrypoint ruleset already exists in the zone
