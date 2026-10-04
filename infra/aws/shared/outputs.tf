@@ -15,3 +15,11 @@ output "gh_role_arns" {
   value     = { for k, r in aws_iam_role.gh : k => r.arn }
   sensitive = true
 }
+output "tfstate_identity_role_arns" {
+  value     = { for k, r in aws_iam_role.tfstate_identity : k => r.arn }
+  sensitive = true
+}
+output "state_kms_key_arn" {
+  value     = data.aws_kms_key.state.arn
+  sensitive = true
+}
