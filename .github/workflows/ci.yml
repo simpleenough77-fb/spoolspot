@@ -213,6 +213,27 @@ jobs:
           set -euo pipefail
           python -m venv "${RUNNER_TEMP}/checkov-venv"
           "${RUNNER_TEMP}/checkov-venv/bin/pip" install --quiet --require-hashes -r infra/ci/requirements.txt
+      - name: Install OpenTofu v1.13.1 (checksum pinned here, reviewed in the PR)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o tofu.zip "https://github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_linux_amd64.zip"
+          echo "8ccbc6f8ee21d2827715f3c6e08a9b3e0209b1e62057c05067ef117e047c1a80  tofu.zip" | sha256sum -c -
+          unzip -q tofu.zip tofu
+          mv tofu "${RUNNER_TEMP}/tofu"
+          rm tofu.zip
+      - name: OpenTofu fmt and validate (every stack, locked providers, no backend, no credentials)
+        env:
+          TF_IN_AUTOMATION: '1'
+          TF_INPUT: '0'
+        run: |
+          set -euo pipefail
+          tofu="${RUNNER_TEMP}/tofu"
+          "${tofu}" fmt -check -recursive -diff infra
+          find infra -name '*.tf' -printf '%h\n' | sort -u | while read -r stack; do
+            echo "::group::validate ${stack}"
+            (cd "${stack}" && "${tofu}" init -backend=false -input=false -lockfile=readonly && "${tofu}" validate)
+            echo "::endgroup::"
+          done
       - name: Checkov (Dockerfile, GitHub Actions, Terraform, CloudFormation)
         run: |
           "${RUNNER_TEMP}/checkov-venv/bin/checkov" --directory . --config-file .checkov.yaml
