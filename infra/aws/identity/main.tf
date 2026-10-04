@@ -1,4 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+locals {
+  mail_domain = "${var.mail_subdomain}.${var.zone_name}" # same derivation as the cloudflare/zone stack
+}
+
 # Cognito Essentials pool per env. Public PKCE client, no secret anywhere in state (plan section 8).
 resource "aws_cognito_user_pool" "this" {
   name                     = "ss-${var.env}-users"
@@ -65,6 +69,15 @@ resource "aws_cognito_user_pool_client" "web" {
   access_token_validity                = 15
   id_token_validity                    = 15
   refresh_token_validity               = 14
+  auth_session_validity                = 3 # minutes, the shortest Cognito allows [A]
+  # Each refresh issues a new refresh token and invalidates the old one after the grace period. [U] confirm with the PKCE flow in staging.
+  refresh_token_rotation {
+    feature                    = "ENABLED"
+    retry_grace_period_seconds = 10
+  }
+  # The client may change the email address and nothing else. Tenant and role live server-side (ADR-0004), never in the pool.
+  read_attributes  = ["email", "email_verified"]
+  write_attributes = ["email"]
   token_validity_units {
     access_token  = "minutes"
     id_token      = "minutes"
@@ -75,6 +88,14 @@ resource "aws_cognito_user_pool_client" "web" {
 
 # SES identity for account email (DKIM CNAMEs go to the zone stack via output).
 resource "aws_sesv2_email_identity" "mail" {
-  email_identity = var.mail_domain
+  email_identity = local.mail_domain
   dkim_signing_attributes { next_signing_key_length = "RSA_2048_BIT" }
+  lifecycle { prevent_destroy = true }
+}
+# Custom MAIL FROM so SPF aligns with the sending domain. The MX and SPF records for bounce.<mail domain> come from the
+# cloudflare/zone stack (manage_ses_records). USE_DEFAULT_VALUE keeps mail flowing if the MX is missing; tighten after staging. [A]
+resource "aws_sesv2_email_identity_mail_from_attributes" "mail" {
+  email_identity         = aws_sesv2_email_identity.mail.email_identity
+  mail_from_domain       = "bounce.${local.mail_domain}"
+  behavior_on_mx_failure = "USE_DEFAULT_VALUE"
 }

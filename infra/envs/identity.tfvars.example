@@ -1,0 +1,7 @@
+# Copy to infra/aws/identity/identity.auto.tfvars (gitignored). Values here are placeholders.
+# One file per env: stg uses the identity-nonprod account and the nonprod domain, prod the identity-prod account and spoolspot.com.
+env          = "stg"
+account_id   = "REPLACE" # 12 digits; the provider refuses any other account
+zone_name    = "REPLACE" # same as zone_name in the cloudflare/zone stack for this env
+app_hostname = "REPLACE" # app.<zone_name>
+# mail_subdomain = "mail" # default; keep equal to mail_subdomain in the cloudflare/zone stack

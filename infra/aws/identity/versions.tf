@@ -12,6 +12,8 @@ terraform {
 
 provider "aws" {
   region = "us-east-1"
+  # A wrong-account run (for example prod credentials with env=stg) fails at plan, before anything is created.
+  allowed_account_ids = [var.account_id]
   default_tags {
     tags = {
       project    = "spoolspot"
