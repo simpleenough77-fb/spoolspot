@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SpoolSpot location seed",
-  "description": "A starting location tree for a SpoolSpot instance. Structural rules only; referential rules (unique ids, parents exist, no cycles, unique tag ids) are checked by scripts/lib/seed.ts. Licensed CC0-1.0 (see REUSE.toml).",
+  "description": "A starting location tree for a SpoolSpot instance. Structural rules only; referential rules (unique ids, parents exist, no cycles, unique tag ids) are checked by app/src/seed/validate.ts. Licensed CC0-1.0 (see REUSE.toml).",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "generated", "locations"],

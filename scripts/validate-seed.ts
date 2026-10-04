@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Usage: node scripts/validate-seed.ts [seed.json] [schema.json]
 import { readFileSync } from 'node:fs';
-import { validateSeed } from './lib/seed.ts';
+import { validateSeed } from '../app/src/seed/validate.ts';
 
 const seedPath = process.argv[2] ?? 'seed/locations-seed.json';
 const schemaPath = process.argv[3] ?? 'schema/locations-seed.schema.json';
