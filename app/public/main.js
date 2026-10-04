@@ -13,6 +13,7 @@ if (!form || !input || !status) throw new Error('page elements are missing');
 function fail(error) {
   if (error instanceof ApiError && error.status === 401) {
     setToken('');
+    clearResults();
     status.textContent = 'That token was not accepted. Check it and try again.';
   } else if (error instanceof ApiError) {
     status.textContent = `The server could not load that (HTTP ${error.status}).`;
@@ -23,7 +24,17 @@ function fail(error) {
   }
 }
 
+function clearResults() {
+  document.getElementById('tree')?.replaceChildren();
+  document.getElementById('summary-rows')?.replaceChildren();
+  const summary = document.getElementById('summary');
+  if (summary) summary.hidden = true;
+  const placement = document.getElementById('placement');
+  if (placement) placement.hidden = true;
+}
+
 async function load() {
+  clearResults();
   status.textContent = 'Loading…';
   try {
     const nodes = await showTree();

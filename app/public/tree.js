@@ -39,8 +39,12 @@ export function describe(node) {
     const unset = node.leaf ? 'Capacity not set' : `${node.capacity_unset} without capacity set`;
     return `${unset} (${node.used} used)`;
   }
-  const base = `${node.free} free of ${node.capacity} (${node.used} used)`;
-  return node.over > 0 ? `${base}, over by ${node.over}` : base;
+  let text = `${node.free} free of ${node.capacity} (${node.used} used)`;
+  if (node.over > 0) text += `, over by ${node.over}`;
+  // Used counts every leaf below; free and capacity count only leaves with a capacity set.
+  if (!node.leaf && node.capacity_unset > 0)
+    text += `, ${node.capacity_unset} without capacity set`;
+  return text;
 }
 
 function leafItem(node) {
@@ -80,8 +84,10 @@ export function leafPaths(nodes, path = [], isRoot = true) {
     return [
       {
         id: node.id,
+        name: node.name,
         label: [...shown, node.name].join(' › '),
-        group: parent ?? 'Home',
+        // The containers above the leaf, without Home: the picker's group heading.
+        group: path.join(' › ') || 'Home',
       },
     ];
   });

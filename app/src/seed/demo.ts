@@ -11,6 +11,9 @@ const TAG_PREFIX = 'DEM0';
 /** Closet shelf 1 gets a small soft capacity so the "over a soft limit" notice can be shown. */
 const SOFT_DEMO_LOCATION = 'closet-storage.shelf-1';
 const SOFT_DEMO_CAPACITY = 4;
+/** fill records on the demo filament that it set the capacity, so remove only undoes its own change. */
+const COLOR_PLAIN = 'Demo';
+const COLOR_CAPACITY_SET = 'Demo (capacity set)';
 
 export interface DemoResult {
   clips: number;
@@ -48,13 +51,20 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
   ];
   const usable = clipPlan.filter(([id]) => present(id));
   const stockHere = present(SOFT_DEMO_LOCATION);
+  const capacityWasUnset =
+    stockHere &&
+    (
+      db
+        .prepare('SELECT capacity FROM location WHERE tenant_id = ? AND id = ?')
+        .get(tenantId, SOFT_DEMO_LOCATION) as { capacity: number | null }
+    ).capacity === null;
 
   const filament = randomUUID();
   db.exec('BEGIN');
   try {
     db.prepare(
-      "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, ?, 'PLA', 'Demo', 'disposable')",
-    ).run(tenantId, filament, DEMO_MANUFACTURER);
+      "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, ?, 'PLA', ?, 'disposable')",
+    ).run(tenantId, filament, DEMO_MANUFACTURER, capacityWasUnset ? COLOR_CAPACITY_SET : COLOR_PLAIN);
     let n = 0;
     for (const [location, count] of usable) {
       for (let i = 0; i < count; i += 1) {
@@ -66,9 +76,13 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
     }
     let spools = 0;
     if (stockHere) {
-      db.prepare(
-        "UPDATE location SET capacity = ? WHERE tenant_id = ? AND id = ? AND capacity IS NULL",
-      ).run(SOFT_DEMO_CAPACITY, tenantId, SOFT_DEMO_LOCATION);
+      if (capacityWasUnset) {
+        db.prepare('UPDATE location SET capacity = ? WHERE tenant_id = ? AND id = ?').run(
+          SOFT_DEMO_CAPACITY,
+          tenantId,
+          SOFT_DEMO_LOCATION,
+        );
+      }
       db.prepare(
         "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, ?, 'spool', 5)",
       ).run(tenantId, randomUUID(), filament, SOFT_DEMO_LOCATION);
@@ -86,6 +100,12 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
 export function removeDemo(db: DatabaseSync, tenantId: string): number {
   const filament = demoFilament(db, tenantId);
   if (filament === undefined) return 0;
+  const setCapacity =
+    (
+      db.prepare('SELECT color FROM filament WHERE tenant_id = ? AND id = ?').get(tenantId, filament) as
+        | { color: string }
+        | undefined
+    )?.color === COLOR_CAPACITY_SET;
   db.exec('BEGIN');
   try {
     const clips = db
@@ -96,9 +116,11 @@ export function removeDemo(db: DatabaseSync, tenantId: string): number {
       filament,
     );
     db.prepare('DELETE FROM filament WHERE tenant_id = ? AND id = ?').run(tenantId, filament);
-    db.prepare(
-      'UPDATE location SET capacity = NULL WHERE tenant_id = ? AND id = ? AND capacity = ?',
-    ).run(tenantId, SOFT_DEMO_LOCATION, SOFT_DEMO_CAPACITY);
+    if (setCapacity) {
+      db.prepare(
+        'UPDATE location SET capacity = NULL WHERE tenant_id = ? AND id = ? AND capacity = ?',
+      ).run(tenantId, SOFT_DEMO_LOCATION, SOFT_DEMO_CAPACITY);
+    }
     db.exec('COMMIT');
     return Number(clips.changes);
   } catch (error) {

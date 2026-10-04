@@ -145,7 +145,7 @@ export interface PlacementSuggestion {
 }
 
 /**
- * Where there is room. Leaves with no capacity set are excluded, and so is any full leaf: a suggestion
+ * Where there is room. Active_use slots are left out unless asked for by type. Leaves with no capacity set are excluded, and so is any full leaf: a suggestion
  * never goes over a limit, hard or soft. Most free places first, then name, so the order is stable.
  */
 export function suggestPlacements(
@@ -158,7 +158,9 @@ export function suggestPlacements(
     const mode = l.capacity_mode;
     const free = l.free ?? 0;
     const eligible = l.capacity !== null && mode !== null && free > 0;
-    return eligible && (type === undefined || l.type === type) ? [{ l, mode, free }] : [];
+    // Slots are filled by the load workflow, so they are suggested only when asked for by type.
+    const typeOk = type === undefined ? l.type !== 'active_use' : l.type === type;
+    return eligible && typeOk ? [{ l, mode, free }] : [];
   });
   return withRoom
     .sort((a, b) => b.free - a.free || a.l.name.localeCompare(b.l.name))

@@ -175,9 +175,13 @@ describe('suggestPlacements', () => {
       leaf('a', 'home', 10, 5),
       leaf('c', 'home', 20, 5),
       leaf('p', 'home', 9, 0, 'soft', 'passive_storage'),
+      leaf('slot', 'home', 1, 0, 'hard', 'active_use'),
     ]);
     expect(suggestPlacements(wide, 1).map((s) => s.location_id)).toEqual(['c', 'p', 'a', 'b']);
     expect(suggestPlacements(wide, 1, 'passive_storage').map((s) => s.location_id)).toEqual(['p']);
     expect(suggestPlacements(wide, 1, undefined, 2)).toHaveLength(2);
+    // A free slot is only suggested when asked for by type.
+    expect(suggestPlacements(wide, 1).map((s) => s.location_id)).not.toContain('slot');
+    expect(suggestPlacements(wide, 1, 'active_use').map((s) => s.location_id)).toEqual(['slot']);
   });
 });

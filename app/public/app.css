@@ -151,6 +151,24 @@ select {
 .tree summary {
   cursor: pointer;
   font-weight: 600;
+  list-style: none;
+}
+
+.tree summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A visible open/closed cue that is a shape, not only colour; the second declaration hides it from
+   screen readers where supported, since the element already announces its expanded state. */
+.tree summary::before {
+  content: '▸';
+  content: '▸' / '';
+  width: 1rem;
+}
+
+.tree details[open] > summary::before {
+  content: '▾';
+  content: '▾' / '';
 }
 
 .tree .figures {
@@ -176,7 +194,7 @@ select {
   min-width: 2.75rem;
 }
 
-.stepper button:disabled {
+.stepper button[aria-disabled='true'] {
   opacity: 1;
   color: var(--muted);
   background: transparent;
@@ -184,7 +202,7 @@ select {
   cursor: not-allowed;
 }
 
-.stepper output {
+.stepper #place-count {
   min-width: 3ch;
   text-align: center;
   font-size: 1.25rem;

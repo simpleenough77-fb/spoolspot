@@ -72,6 +72,17 @@ describe('demo data', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM clip WHERE tenant_id = ?').get(TENANT_B)).toMatchObject({ n: 0 });
   });
 
+  it('does not reset a capacity of 4 that was already there before fill', async () => {
+    const { db } = await setup();
+    db.prepare("UPDATE location SET capacity = 4 WHERE id = 'closet-storage.shelf-1'").run();
+    fillDemo(db, TENANT_A);
+    removeDemo(db, TENANT_A);
+    const row = db
+      .prepare("SELECT capacity FROM location WHERE id = 'closet-storage.shelf-1' AND tenant_id = ?")
+      .get(TENANT_A) as unknown as { capacity: number | null };
+    expect(row.capacity).toBe(4);
+  });
+
   it('marks everything it adds as demo', async () => {
     const { db } = await setup();
     fillDemo(db, TENANT_A);

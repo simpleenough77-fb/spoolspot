@@ -251,15 +251,49 @@ describe('GET /api/v1/locations/:id/placement', () => {
     expect(await res.json()).toEqual({ error: 'invalid_request' });
   });
 
-  it.each(['UPPER', 'a..b', '-a', 'a_b', 'a'.repeat(65), 'a%00b', '%2e%2e'])(
-    'rejects the location id %j with 400',
-    async (id) => {
-      const { get } = await setup();
-      const res = await get(`/api/v1/locations/${id}/placement?count=1`);
-      expect([400, 404]).toContain(res.status);
-      expect(res.status).not.toBe(200);
-    },
-  );
+  it.each([
+    ['UPPER', 400],
+    ['a..b', 400],
+    ['-a', 400],
+    ['a_b', 400],
+    ['a'.repeat(65), 400],
+    ['a%00b', 400],
+    ['a%2Fb', 400],
+  ])('rejects the location id %j with %i', async (id, status) => {
+    const { get } = await setup();
+    const res = await get(`/api/v1/locations/${id}/placement?count=1`);
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ error: 'invalid_request' });
+  });
+
+  it('never leaves the API for a dot-segment id: it is not a location route', async () => {
+    const { get } = await setup();
+    const res = await get('/api/v1/locations/%2e%2e/placement?count=1');
+    expect([400, 404]).toContain(res.status);
+  });
+
+  it("answers 404, not 422, for another tenant's container id", async () => {
+    const { get, db } = await setup();
+    db.prepare(
+      "INSERT INTO location (tenant_id, id, name, type, parent, leaf, tag_source) VALUES (?, 'b-room', 'B room', 'container', 'home', 0, NULL)",
+    ).run(TENANT_B);
+    const res = await get('/api/v1/locations/b-room/placement?count=1');
+    expect(res.status).toBe(404);
+  });
+
+  it("does not count another tenant's boxed stock", async () => {
+    const { get, db } = await setup();
+    const f = db
+      .prepare('SELECT id FROM filament WHERE tenant_id = ?')
+      .get(TENANT_B) as unknown as { id: string };
+    db.prepare(
+      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, 'closet-storage.shelf-1', 'spool', 7)",
+    ).run(TENANT_B, uuid(), f.id);
+    const { locations } = (await (await get('/api/v1/locations/tree')).json()) as {
+      locations: LocationNode[];
+    };
+    expect(find(locations, 'closet-storage.shelf-1')).toMatchObject({ used: 0 });
+  });
 });
 
 describe('GET /api/v1/placement-suggestions', () => {
@@ -274,6 +308,21 @@ describe('GET /api/v1/placement-suggestions', () => {
     expect(suggestions.length).toBeGreaterThan(0);
     expect(suggestions[0]?.free).toBe(16);
     expect(ids[0]).toBe('loc1.shelf-2');
+  });
+
+  it('does not suggest active_use slots unless asked for by type', async () => {
+    const { get } = await setup();
+    const all = (await (await get('/api/v1/placement-suggestions?count=1')).json()) as {
+      suggestions: PlacementSuggestion[];
+    };
+    expect(all.suggestions.every((s) => s.type !== 'active_use')).toBe(true);
+    const slots = (await (
+      await get('/api/v1/placement-suggestions?count=1&type=active_use')
+    ).json()) as {
+      suggestions: PlacementSuggestion[];
+    };
+    expect(slots.suggestions.length).toBeGreaterThan(0);
+    expect(slots.suggestions.every((s) => s.type === 'active_use')).toBe(true);
   });
 
   it('never suggests a passive shelf while its capacity is not set', async () => {

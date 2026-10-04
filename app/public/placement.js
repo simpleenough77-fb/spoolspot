@@ -7,6 +7,10 @@ import { getJson } from './api.js';
 import { leafPaths } from './tree.js';
 
 const MAX = 1000;
+// Set up again on every load: the previous listeners and any answer still in flight are dropped, so a
+// second submit can never leave two sets of handlers fighting over the result.
+let controller = null;
+let sequence = 0;
 
 export function message(check) {
   const { outcome, count } = check;
@@ -60,7 +64,16 @@ export function setupPlacement(nodes, onError) {
     throw new Error('placement elements are missing');
   }
 
+  controller?.abort();
+  controller = new AbortController();
+  const { signal } = controller;
+  sequence += 1;
+
   const paths = leafPaths(nodes);
+  if (paths.length === 0) {
+    section.hidden = true;
+    return Promise.resolve();
+  }
   const labels = new Map(paths.map((p) => [p.id, p.label]));
   select.replaceChildren();
   const groups = new Map();
@@ -74,21 +87,22 @@ export function setupPlacement(nodes, onError) {
     }
     const option = document.createElement('option');
     option.value = p.id;
-    option.textContent = p.label;
+    option.textContent = p.name;
     group.append(option);
   }
 
   let count = 1;
-  let sequence = 0;
+  // aria-disabled, not disabled: a button that has focus must not vanish from the tab order mid-tap.
   const show = () => {
     countOut.textContent = String(count);
-    less.disabled = count <= 1;
-    more.disabled = count >= MAX;
+    less.setAttribute('aria-disabled', String(count <= 1));
+    more.setAttribute('aria-disabled', String(count >= MAX));
   };
 
   async function refresh() {
     show();
-    const mine = ++sequence;
+    sequence += 1;
+    const mine = sequence;
     try {
       const id = encodeURIComponent(select.value);
       const [check, near] = await Promise.all([
@@ -117,15 +131,25 @@ export function setupPlacement(nodes, onError) {
     }
   }
 
-  select.addEventListener('change', () => void refresh());
-  less.addEventListener('click', () => {
-    count = Math.max(1, count - 1);
-    void refresh();
-  });
-  more.addEventListener('click', () => {
-    count = Math.min(MAX, count + 1);
-    void refresh();
-  });
+  select.addEventListener('change', () => void refresh(), { signal });
+  less.addEventListener(
+    'click',
+    () => {
+      if (count <= 1) return;
+      count -= 1;
+      void refresh();
+    },
+    { signal },
+  );
+  more.addEventListener(
+    'click',
+    () => {
+      if (count >= MAX) return;
+      count += 1;
+      void refresh();
+    },
+    { signal },
+  );
   section.hidden = false;
   return refresh();
 }
