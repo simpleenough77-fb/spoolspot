@@ -35,8 +35,12 @@ variable "acme_account_uri" {
 }
 variable "caa_issuers" {
   type        = list(string)
-  description = "CAs allowed for the apex. Must include Cloudflare Universal SSL partner CAs. [U] confirm the list against Cloudflare's CA reference before apply."
-  default     = ["letsencrypt.org", "pki.goog", "ssl.com", "digicert.com", "sectigo.com"]
+  description = "CA domains allowed to issue for the apex (CAA issue and issuewild). Cloudflare Universal SSL uses Let's Encrypt, Google Trust Services and SSL.com; Sectigo is its backup CA. Source: Cloudflare docs, SSL > Reference > Certificate authorities and Edge certificates > CAA records, checked 2026-10-04. DigiCert is not on the list and is not allowed. The list is not exhaustive and Cloudflare may change it, so re-check before each apply."
+  default     = ["letsencrypt.org", "pki.goog", "ssl.com", "sectigo.com"]
+  validation {
+    condition     = length(var.caa_issuers) > 0 && alltrue([for c in var.caa_issuers : can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", c))])
+    error_message = "caa_issuers must list at least one CA, each a plain lowercase domain such as letsencrypt.org (no parameters, quotes or semicolons)."
+  }
 }
 variable "security_mailbox" {
   type        = string
@@ -106,6 +110,15 @@ variable "import_dnssec" {
   type        = bool
   default     = false
   description = "First plan only: import the already-active DNSSEC setting instead of enabling it. Clear after the first apply."
+}
+variable "spf_record_id" {
+  type        = string
+  default     = null
+  description = "ID of the apex SPF TXT record that Email Routing created, for the first-plan import (kept out of the repo). Set only while importing."
+  validation {
+    condition     = var.spf_record_id == null ? true : can(regex("^[0-9a-f]{32}$", var.spf_record_id))
+    error_message = "spf_record_id must be 32 lowercase hex characters."
+  }
 }
 variable "manage_ses_records" {
   type    = bool
