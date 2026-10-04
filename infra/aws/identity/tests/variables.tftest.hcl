@@ -144,3 +144,50 @@ run "token_hardening_is_pinned" {
     error_message = "MX failure behaviour is USE_DEFAULT_VALUE until staging proves the bounce records (tracked to REJECT_MESSAGE)"
   }
 }
+
+# SPOOL-183: the plan role exists only when the trusted role is set, and only for the ss-gh-plan role.
+run "plan_role_is_off_by_default" {
+  command = plan
+  assert {
+    condition     = length(aws_iam_role.plan_readonly) == 0
+    error_message = "the plan role must not exist unless plan_trusted_role_arn is set"
+  }
+}
+
+run "plan_role_is_created_for_ss_gh_plan" {
+  command = plan
+  variables { plan_trusted_role_arn = "arn:aws:iam::210987654321:role/ss-gh-plan" }
+  override_data {
+    target = data.aws_iam_policy_document.plan_trust[0]
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+  override_data {
+    target = data.aws_iam_policy_document.plan_deny_data
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+  assert {
+    condition     = length(aws_iam_role.plan_readonly) == 1 && length(aws_iam_role_policy.plan_deny_data) == 1
+    error_message = "the plan role and its data-read deny policy must be created together"
+  }
+}
+
+run "plan_role_rejects_other_principals" {
+  command = plan
+  variables { plan_trusted_role_arn = "arn:aws:iam::210987654321:role/some-other-role" }
+  expect_failures = [var.plan_trusted_role_arn]
+}
+
+run "plan_role_rejects_a_user_arn" {
+  command = plan
+  variables { plan_trusted_role_arn = "arn:aws:iam::210987654321:user/ss-gh-plan" }
+  expect_failures = [var.plan_trusted_role_arn]
+}
+
+run "plan_role_is_rejected_for_prod" {
+  command = plan
+  variables {
+    env                   = "prod"
+    plan_trusted_role_arn = "arn:aws:iam::210987654321:role/ss-gh-plan"
+  }
+  expect_failures = [var.plan_trusted_role_arn]
+}

@@ -5,3 +5,5 @@ account_id   = "REPLACE" # 12 digits; the provider refuses any other account
 zone_name    = "REPLACE" # same as zone_name in the cloudflare/zone stack for this env
 app_hostname = "REPLACE" # app.<zone_name>
 # mail_subdomain = "mail" # default; keep equal to mail_subdomain in the cloudflare/zone stack
+# SPOOL-183 (optional, plan-only CI): ARN of the ss-gh-plan role in the Shared account (output gh_role_arns of infra/aws/shared). Leave unset until the shared stack is applied.
+# plan_trusted_role_arn = "arn:aws:iam::<shared account id>:role/ss-gh-plan"
