@@ -102,3 +102,106 @@ td {
 td {
   font-variant-numeric: tabular-nums;
 }
+
+h2 {
+  font-size: 1.25rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 1rem 0 0.25rem;
+}
+
+select {
+  font: inherit;
+  width: 100%;
+  min-height: 2.75rem;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem;
+  color: var(--text);
+  background: var(--background);
+  border: 2px solid var(--border);
+  border-radius: 0.375rem;
+}
+
+.tree,
+.tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tree ul {
+  margin-left: 1rem;
+  border-left: 2px solid var(--border);
+}
+
+.tree summary,
+.tree .leaf {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: center;
+  min-height: 2.75rem;
+  box-sizing: border-box;
+  padding: 0.25rem 0.5rem;
+}
+
+.tree summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tree .figures {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  border: 2px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0 0.5rem;
+  font-size: 0.875rem;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.stepper button {
+  margin-top: 0;
+  min-width: 2.75rem;
+}
+
+.stepper button:disabled {
+  opacity: 1;
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+.stepper output {
+  min-width: 3ch;
+  text-align: center;
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepper-label {
+  font-weight: 600;
+  margin: 0.75rem 0 0.25rem;
+}
+
+#place-result {
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 6px solid var(--border);
+}
+
+#place-result:empty {
+  display: none;
+}

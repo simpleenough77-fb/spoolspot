@@ -5,6 +5,15 @@
 import { ForbiddenError, hasScope, Scope, type Principal } from '../auth/principal.ts';
 import type { Sql } from '../db/sql.ts';
 import type { LocationType } from '../seed/validate.ts';
+import {
+  buildTree,
+  checkPlacement,
+  suggestPlacements,
+  type LocationNode,
+  type LocationRow,
+  type PlacementCheck,
+  type PlacementSuggestion,
+} from './tree.ts';
 
 export interface LocationTypeSummary {
   type: LocationType;
@@ -20,8 +29,16 @@ export interface LocationSummary {
   by_type: LocationTypeSummary[];
 }
 
+/** Why a placement check cannot be answered. Unknown ids and other tenants' ids look the same. */
+export type PlacementRefusal = 'not_found' | 'not_a_leaf';
+
 export interface ScopedData {
   locationSummary(): Promise<LocationSummary>;
+  locationTree(): Promise<LocationNode[]>;
+  /** Read-only: what would happen if `count` units were placed at the leaf. */
+  placementCheck(locationId: string, count: number): Promise<PlacementCheck | PlacementRefusal>;
+  /** Leaves with room, most free first. Leaves with no capacity set are left out. */
+  placementSuggestions(count: number, type?: LocationType): Promise<PlacementSuggestion[]>;
 }
 
 const TYPE_ORDER: readonly LocationType[] = [
@@ -44,7 +61,38 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
   const require = (scope: typeof Scope.LocationsRead): void => {
     if (!hasScope(principal, scope)) throw new ForbiddenError(scope);
   };
+  const loadTree = async (): Promise<LocationNode[]> => {
+    // `used` is derived: boxed counts at the location plus clips placed there. Both subqueries are
+    // bound to the tenant, and so is the outer query.
+    const rows = await sql.all<LocationRow>(
+      `SELECT l.id, l.name, l.type, l.parent, l.leaf, l.capacity, l.capacity_mode,
+              COALESCE((SELECT SUM(s.count) FROM stock_line s
+                         WHERE s.tenant_id = l.tenant_id AND s.location_id = l.id), 0)
+              + (SELECT COUNT(*) FROM clip c
+                  WHERE c.tenant_id = l.tenant_id AND c.location_id = l.id) AS used
+         FROM location l
+        WHERE l.tenant_id = ?
+        ORDER BY l.rowid`,
+      [tenantId],
+    );
+    return buildTree(rows);
+  };
   return {
+    async locationTree(): Promise<LocationNode[]> {
+      require(Scope.LocationsRead);
+      return loadTree();
+    },
+    async placementCheck(locationId, count) {
+      require(Scope.LocationsRead);
+      const leaf = [...flatten(await loadTree())].find((n) => n.id === locationId);
+      if (!leaf) return 'not_found';
+      if (!leaf.leaf) return 'not_a_leaf';
+      return checkPlacement(leaf, count);
+    },
+    async placementSuggestions(count, type) {
+      require(Scope.LocationsRead);
+      return suggestPlacements(await loadTree(), count, type);
+    },
     async locationSummary(): Promise<LocationSummary> {
       require(Scope.LocationsRead);
       const rows = await sql.all<Row>(
@@ -70,4 +118,11 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       return { total: by_type.reduce((n, t) => n + t.locations, 0), by_type };
     },
   };
+}
+
+function* flatten(nodes: readonly LocationNode[]): Generator<LocationNode> {
+  for (const node of nodes) {
+    yield node;
+    yield* flatten(node.children);
+  }
 }

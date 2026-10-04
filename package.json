@@ -26,7 +26,9 @@
     "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm seed:validate && pnpm check:actions-pinned && pnpm check:spdx",
     "dev": "node app/src/server.ts",
     "db:migrate": "node scripts/migrate.ts",
-    "seed:import": "node scripts/import-seed.ts"
+    "seed:import": "node scripts/import-seed.ts",
+    "demo:fill": "node scripts/demo-data.ts fill",
+    "demo:remove": "node scripts/demo-data.ts remove"
   },
   "dependencies": {
     "@hono/node-server": "2.1.3",
