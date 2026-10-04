@@ -4,11 +4,14 @@
 //
 // Browser: set CHROME_PATH to a Chrome/Chromium binary, or leave it unset to use the installed
 // Google Chrome ("chrome" channel), which GitHub's ubuntu runners include.
+/// <reference lib="dom" />
+// The page-side callbacks below run in the browser, so this file needs the DOM types.
 import { AxeBuilder } from '@axe-core/playwright';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { extname, join, relative } from 'node:path';
+import { join, relative } from 'node:path';
+import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import { chromium, type Page } from 'playwright-core';
 import { createDevTokenProvider } from '../app/src/auth/dev-token.ts';
 import { createScopedData } from '../app/src/data/scoped.ts';
@@ -27,17 +30,6 @@ function htmlFiles(dir: string): string[] {
     if (statSync(full).isDirectory()) return htmlFiles(full);
     return full.endsWith('.html') ? [full] : [];
   });
-}
-
-// Browsers refuse a stylesheet served with the wrong type, which would make the contrast checks meaningless.
-const TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-};
-function contentType(file: string): string {
-  return TYPES[extname(file)] ?? 'application/octet-stream';
 }
 
 const TENANT = '3b1c0d1e-5a1e-4c63-9a0e-5b2a6f0c7d11';
@@ -66,10 +58,20 @@ async function scanApp() {
       filament,
     );
   }
+  // A soft limit that is already over, so the "notice" state renders: 5 boxed spools, room for 4.
+  db.prepare('UPDATE location SET capacity = 4 WHERE tenant_id = ? AND id = ?').run(
+    TENANT,
+    'closet-storage.shelf-1',
+  );
+  db.prepare(
+    "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-0000000000aa', ?, 'closet-storage.shelf-1', 'spool', 5)",
+  ).run(TENANT, filament);
+  // The real app with the real static handler, so the CSP header and module scripts are exercised.
   return createApp({
     auth: createDevTokenProvider({ token: SCAN_TOKEN, tenantId: TENANT }),
     data: (principal) => createScopedData(sql, principal),
     allowedHosts: ['127.0.0.1'],
+    staticHandler: serveStatic({ root: './app/public' }),
   });
 }
 
@@ -94,25 +96,13 @@ if (pages.length === 0) {
   process.exit(1);
 }
 
-const server = createServer((req, res) => {
-  const path = (req.url ?? '/').split('?')[0] ?? '/';
-  const file = join(root, path === '/' ? 'index.html' : path);
-  if (relative(root, file).startsWith('..')) {
-    res.writeHead(403).end();
-    return;
-  }
-  let body: Buffer;
-  try {
-    body = readFileSync(file);
-  } catch {
-    res.writeHead(404).end();
-    return;
-  }
-  res.writeHead(200, { 'content-type': contentType(file) });
-  res.end(body);
+const app = await scanApp();
+let server: ReturnType<typeof serve> | undefined;
+const port = await new Promise<number>((resolve) => {
+  server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, (info: AddressInfo) => {
+    resolve(info.port);
+  });
 });
-await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-const port = (server.address() as AddressInfo).port;
 
 const executablePath = process.env.CHROME_PATH;
 const browser = await chromium.launch(executablePath ? { executablePath } : { channel: 'chrome' });
@@ -130,23 +120,11 @@ try {
     await context.close();
   }
 
-  // The page with data: real API, real browser, tapping through the states a person sees.
-  const app = await scanApp();
+  // The page with data: the real app, a real browser, tapping through the states a person sees.
   for (const scheme of ['light', 'dark'] as const) {
     const context = await browser.newContext({
       colorScheme: scheme,
       viewport: { width: 375, height: 700 },
-    });
-    await context.route('**/api/**', async (route) => {
-      const url = new URL(route.request().url());
-      const response = await app.request(`http://127.0.0.1${url.pathname}${url.search}`, {
-        headers: { host: '127.0.0.1', ...route.request().headers() },
-      });
-      await route.fulfill({
-        status: response.status,
-        headers: Object.fromEntries(response.headers),
-        body: await response.text(),
-      });
     });
     const tab = await context.newPage();
     await tab.goto(`http://127.0.0.1:${String(port)}/`);
@@ -154,9 +132,19 @@ try {
     await tab.click('button[type=submit]');
     await tab.waitForSelector('#place-result:not(:empty)');
     await tab.waitForSelector('#tree li');
-    await tab.evaluate(
-      "document.querySelectorAll('#tree details').forEach((d) => { d.open = true; })",
-    );
+    violations += await axe(tab, `/ (${scheme}, tree collapsed)`);
+    // Collapsed containers must show a cue that they open: the summary marker is generated content.
+    const cue = await tab
+      .locator('#tree details:not([open]) > summary')
+      .first()
+      .evaluate((el) => getComputedStyle(el, '::before').content);
+    violations += expectText(cue, '▸', 'a collapsed container shows a visible cue that it opens');
+    // Open every container by tapping its summary, deepest last, the way a person would.
+    for (let guard = 0; guard < 100; guard += 1) {
+      const closed = tab.locator('#tree details:not([open]) > summary');
+      if ((await closed.count()) === 0) break;
+      await closed.first().click();
+    }
     violations += await axe(tab, `/ (${scheme}, tree expanded)`);
     violations += expectText(
       await tab.locator('#tree').innerText(),
@@ -171,9 +159,7 @@ try {
     // 16 places, 10 used: pick 7 to go over the hard limit and show the warning state.
     await tab.selectOption('#place-location', 'loc1.shelf-1');
     for (let i = 0; i < 6; i += 1) await tab.click('#place-more');
-    await tab.waitForFunction(
-      "document.getElementById('place-result')?.dataset.outcome === 'warning'",
-    );
+    await tab.locator('#place-result[data-outcome="warning"]').waitFor();
     violations += await axe(tab, `/ (${scheme}, hard-limit warning)`);
     violations += expectText(
       await tab.locator('#place-result').innerText(),
@@ -181,22 +167,29 @@ try {
       'a hard limit shows a warning',
     );
     await tab.selectOption('#place-location', 'closet-storage.shelf-1');
-    await tab.waitForFunction(
-      "document.getElementById('place-result')?.dataset.outcome === 'capacity_not_set'",
+    await tab.locator('#place-result[data-outcome="notice"]').waitFor();
+    violations += await axe(tab, `/ (${scheme}, soft-limit notice)`);
+    violations += expectText(
+      await tab.locator('#place-result').innerText(),
+      'Notice',
+      'a soft limit allows with a notice',
     );
+    await tab.selectOption('#place-location', 'closet-storage.shelf-2');
+    await tab.locator('#place-result[data-outcome="capacity_not_set"]').waitFor();
     violations += await axe(tab, `/ (${scheme}, capacity not set)`);
     violations += expectText(
       await tab.locator('#place-result').innerText(),
       'not set',
       'capacity not set is shown for placement',
     );
+    // Neither a leaf with no capacity nor one already over its limit is suggested.
     const suggested = await tab.locator('#place-suggestions').innerText();
     violations += suggested.includes('Storage closet') ? 1 : 0;
     await context.close();
   }
 } finally {
   await browser.close();
-  server.close();
+  server?.close();
 }
 
 if (violations > 0) process.exit(1);

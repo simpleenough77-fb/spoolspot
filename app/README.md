@@ -13,6 +13,6 @@ The page shows Home, containers and leaf locations, collapsible. Each leaf shows
 
 - `GET /api/v1/locations/tree`: the nested tree with used, capacity, free and over.
 - `GET /api/v1/locations/{id}/placement?count=N`: what would happen if N units went there (`ok`, `notice` over a soft limit, `warning` over a hard limit, `capacity_not_set`). Read-only. An unknown id and another tenant's id both answer 404.
-- `GET /api/v1/placement-suggestions?count=N[&type=...]`: leaves with room, most free first.
+- `GET /api/v1/placement-suggestions?count=N[&type=...]`: leaves with room, most free first. Active_use slots are left out unless you ask for them with `type=active_use`.
 
 A tree with nothing stored shows 0 used everywhere. To see used and free on your own tree, `pnpm demo:fill` adds clearly marked demo items and `pnpm demo:remove` takes exactly those away again. Container roll-ups add up each leaf's free places, so one full shelf never hides room on another. Several roots or leaves without a parent are allowed by the schema; the app does not create them.
