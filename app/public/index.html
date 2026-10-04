@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SpoolSpot</title>
     <link rel="stylesheet" href="app.css" />
-    <script src="summary.js" defer></script>
+    <script type="module" src="main.js"></script>
   </head>
   <body>
     <main>
       <h1>SpoolSpot</h1>
       <p>
-        Development preview: how many locations the app knows about, by type. This build uses plain
-        HTTP and a single development token. Use it only on your own network.
+        Development preview: where there is room. This build uses plain HTTP and a single
+        development token. Use it only on your own network.
       </p>
 
       <form id="token-form">
@@ -26,10 +26,30 @@
           spellcheck="false"
           required
         />
-        <button type="submit">Show location counts</button>
+        <button type="submit">Show locations</button>
       </form>
 
-      <p id="status" role="status">Enter your development token to load the counts.</p>
+      <p id="status" role="status">Enter your development token to load the locations.</p>
+
+      <section id="tree-section" aria-labelledby="tree-heading">
+        <h2 id="tree-heading">Locations</h2>
+        <div id="tree"></div>
+      </section>
+
+      <section id="placement" aria-labelledby="placement-heading" hidden>
+        <h2 id="placement-heading">Can I put it here?</h2>
+        <label for="place-location">Location</label>
+        <select id="place-location"></select>
+        <p class="stepper-label" id="place-count-label">How many</p>
+        <div class="stepper" role="group" aria-labelledby="place-count-label">
+          <button type="button" id="place-less" aria-label="One fewer">−</button>
+          <output id="place-count" aria-live="polite">1</output>
+          <button type="button" id="place-more" aria-label="One more">+</button>
+        </div>
+        <p id="place-result" role="status"></p>
+        <h3>Where there is room</h3>
+        <ul id="place-suggestions"></ul>
+      </section>
 
       <table id="summary" hidden>
         <caption>

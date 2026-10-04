@@ -11,6 +11,7 @@ import {
   type Principal,
 } from '../auth/principal.ts';
 import type { ScopedData } from '../data/scoped.ts';
+import type { LocationType } from '../seed/validate.ts';
 
 export interface AppOptions {
   auth: AuthProvider;
@@ -44,6 +45,26 @@ export function hostName(header: string | undefined): string | null {
   const value = header.trim().toLowerCase();
   const m = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::\d{1,5})?$/.exec(value);
   return m?.[1] ?? null;
+}
+
+const LOCATION_ID = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
+const LEAF_TYPES: readonly LocationType[] = [
+  'active_storage',
+  'active_use',
+  'passive_storage',
+  'clip_storage',
+];
+
+/** A whole number from 1 to 1000, or null. Rejects signs, decimals, exponents, spaces and leading zeros. */
+export function parseCount(text: string | undefined): number | null {
+  if (text === undefined || !/^[1-9]\d{0,3}$/.test(text)) return null;
+  const n = Number(text);
+  return n <= 1000 ? n : null;
+}
+
+/** One query value, or undefined when absent or repeated: a repeated parameter is ambiguous, so it is refused. */
+function single(values: string[] | undefined): string | undefined {
+  return values?.length === 1 ? values[0] : undefined;
 }
 
 export function createApp(options: AppOptions): Hono<Env> {
@@ -96,6 +117,48 @@ export function createApp(options: AppOptions): Hono<Env> {
       return c.json({ error: 'forbidden' }, 403);
     }
     return c.json(await c.get('data').locationSummary());
+  });
+
+  app.get('/api/v1/locations/tree', async (c) => {
+    if (!hasScope(c.get('principal'), Scope.LocationsRead)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    return c.json({ locations: await c.get('data').locationTree() });
+  });
+
+  // Read-only: asks what would happen, stores nothing. An id that does not exist and an id that belongs
+  // to another tenant get the same 404.
+  app.get('/api/v1/locations/:id/placement', async (c) => {
+    if (!hasScope(c.get('principal'), Scope.LocationsRead)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const id = c.req.param('id');
+    const count = parseCount(single(c.req.queries('count')));
+    if (id.length > 64 || !LOCATION_ID.test(id) || count === null) {
+      return c.json({ error: 'invalid_request' }, 400);
+    }
+    const result = await c.get('data').placementCheck(id, count);
+    if (result === 'not_found') return c.json({ error: 'not_found' }, 404);
+    if (result === 'not_a_leaf') return c.json({ error: 'not_a_leaf' }, 422);
+    return c.json(result);
+  });
+
+  app.get('/api/v1/placement-suggestions', async (c) => {
+    if (!hasScope(c.get('principal'), Scope.LocationsRead)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const count = parseCount(single(c.req.queries('count')));
+    const typeValues = c.req.queries('type');
+    const typeText = single(typeValues);
+    const type = LEAF_TYPES.find((t) => t === typeText);
+    if (
+      count === null ||
+      (typeValues !== undefined && type === undefined) ||
+      (typeValues?.length ?? 0) > 1
+    ) {
+      return c.json({ error: 'invalid_request' }, 400);
+    }
+    return c.json({ suggestions: await c.get('data').placementSuggestions(count, type) });
   });
 
   app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));

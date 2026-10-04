@@ -36,6 +36,15 @@ const get = (
   headers: Record<string, string> = {},
 ) => app.request(`http://localhost${path}`, { headers: { host: 'localhost:8787', ...headers } });
 
+const unused = (): Promise<never> => Promise.reject(new Error('not used by this test'));
+const stubData = (partial: Partial<ScopedData>): ScopedData => ({
+  locationSummary: unused,
+  locationTree: unused,
+  placementCheck: unused,
+  placementSuggestions: unused,
+  ...partial,
+});
+
 const bearer = { authorization: `Bearer ${TEST_TOKEN}` };
 
 afterEach(() => {
@@ -191,9 +200,8 @@ describe('failure handling', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const app = createApp({
       auth: createDevTokenProvider({ token: TEST_TOKEN, tenantId: TENANT_A }),
-      data: () => ({
-        locationSummary: () => Promise.reject(new TypeError('secret detail 12345')),
-      }),
+      data: () =>
+        stubData({ locationSummary: () => Promise.reject(new TypeError('secret detail 12345')) }),
       allowedHosts: HOSTS,
     });
     const res = await get(app, '/api/v1/locations/summary', bearer);
@@ -207,10 +215,11 @@ describe('failure handling', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const app = createApp({
       auth: createDevTokenProvider({ token: TEST_TOKEN, tenantId: TENANT_A }),
-      data: () => ({
-        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-        locationSummary: () => Promise.reject('secret string 12345'),
-      }),
+      data: () =>
+        stubData({
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          locationSummary: () => Promise.reject('secret string 12345'),
+        }),
       allowedHosts: HOSTS,
     });
     const res = await get(app, '/api/v1/locations/summary', bearer);
