@@ -110,3 +110,85 @@ resource "aws_iam_role_policy" "tfstate_identity" {
   role     = aws_iam_role.tfstate_identity[each.key].id
   policy   = data.aws_iam_policy_document.tfstate_access[each.key].json
 }
+
+# ---------- SPOOL-183: read-only state access for plan-only CI ----------
+# The pull-request plan job (ss-gh-plan) reads the stg identity state through this role. It can read one state object and
+# nothing else: no PutObject (so no state write), no lock object (the plan runs with -lock=false), no delete. There is
+# deliberately no prod counterpart: ss-gh-plan trusts any same-repository pull request, and a pull request can edit the
+# workflow it runs, so prod state must stay out of its reach. The provider (not the backend) assumes the identity
+# account's ss-plan-readonly role, so the ambient credentials stay ss-gh-plan for the whole run and this trust needs
+# no cross-account principal. The role is in the same account as ss-gh-plan, so naming its ARN as the principal is enough.
+data "aws_iam_policy_document" "tfstate_ro_trust" {
+  statement {
+    sid     = "AssumeFromPlanRole"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.gh["ss-gh-plan"].arn]
+    }
+  }
+}
+
+resource "aws_iam_role" "tfstate_identity_stg_ro" {
+  name                 = "ss-tfstate-identity-stg-ro"
+  description          = "SPOOL-183: read-only OpenTofu state access for plan-only CI on the stg identity stack."
+  assume_role_policy   = data.aws_iam_policy_document.tfstate_ro_trust.json
+  max_session_duration = 3600
+}
+
+data "aws_iam_policy_document" "tfstate_ro_access" {
+  statement {
+    sid       = "StateObjectReadOnly"
+    actions   = ["s3:GetObject"]
+    resources = ["${local.state_bucket_arn}/${local.state_keys["stg"]}"]
+  }
+  # Strict StringLike (no IfExists): the stg state exists after its first apply, so the empty-state probe the human
+  # role needs is not needed here. A list call outside the stg prefix is denied. [U] confirm on the first plan run.
+  statement {
+    sid       = "ListOwnPrefixOnly"
+    actions   = ["s3:ListBucket"]
+    resources = [local.state_bucket_arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["aws/identity/stg/*", "env:/"]
+    }
+  }
+  statement {
+    sid       = "StateKeyDecryptViaS3Only"
+    actions   = ["kms:Decrypt"]
+    resources = [data.aws_kms_key.state.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${data.aws_region.current.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "tfstate_identity_stg_ro" {
+  name   = "tfstate-read-only"
+  role   = aws_iam_role.tfstate_identity_stg_ro.id
+  policy = data.aws_iam_policy_document.tfstate_ro_access.json
+}
+
+# ss-gh-plan may assume the stg read-only state role and the stg identity plan role, and nothing else.
+data "aws_iam_policy_document" "plan_assume" {
+  statement {
+    sid       = "AssumeStgReadOnlyStateRole"
+    actions   = ["sts:AssumeRole"]
+    resources = [aws_iam_role.tfstate_identity_stg_ro.arn]
+  }
+  statement {
+    sid       = "AssumeStgIdentityPlanRole"
+    actions   = ["sts:AssumeRole"]
+    resources = ["arn:${data.aws_partition.current.partition}:iam::${var.identity_account_ids["stg"]}:role/ss-plan-readonly"]
+  }
+}
+
+resource "aws_iam_role_policy" "plan_assume" {
+  name   = "plan-assume-readonly-roles"
+  role   = aws_iam_role.gh["ss-gh-plan"].id
+  policy = data.aws_iam_policy_document.plan_assume.json
+}

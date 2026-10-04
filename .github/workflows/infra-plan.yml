@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPOOL-183: plan-only OpenTofu for the stg identity stack on pull requests. There is no apply step, the AWS roles
+# are read-only (ss-gh-plan; the provider assumes ss-plan-readonly in the identity account) and state is read through
+# a read-only role with -lock=false. Plan output on a public repository is public: stg only, no prod state is reachable. This job is deliberately NOT part of ci-gate: it needs repository variables and the shared
+# stack to be applied first, and a missing setup must not block merges. Cloudflare plans are a separate workflow (SPOOL-185).
+# The OIDC trust in infra/aws/shared pins this exact file (infra-plan.yml@refs/pull/*), so keep the name.
+name: Infra plan (stg identity, plan only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/aws/identity/**'
+      - 'infra/envs/identity*.example'
+      - '.github/workflows/infra-plan.yml'
+
+permissions: {}
+
+concurrency:
+  group: infra-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan-identity-stg:
+    name: Plan aws/identity (stg)
+    # Same-repository branches only. Fork pull requests get no OIDC token and no repository variables anyway.
+    if: github.event.pull_request.head.repo.full_name == github.repository && vars.SPOOL_PLAN_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      SHARED_ACCOUNT_ID: ${{ vars.SPOOL_SHARED_ACCOUNT_ID }}
+      IDENTITY_STG_ACCOUNT_ID: ${{ vars.SPOOL_IDENTITY_STG_ACCOUNT_ID }}
+      STATE_BUCKET: ${{ vars.SPOOL_STATE_BUCKET }}
+      STATE_KMS_KEY_ARN: ${{ vars.SPOOL_STATE_KMS_KEY_ARN }}
+      TF_VAR_env: stg
+      TF_VAR_account_id: ${{ vars.SPOOL_IDENTITY_STG_ACCOUNT_ID }}
+      TF_VAR_zone_name: ${{ vars.SPOOL_STG_ZONE_NAME }}
+      TF_VAR_app_hostname: ${{ vars.SPOOL_STG_APP_HOSTNAME }}
+      TF_VAR_plan_trusted_role_arn: arn:aws:iam::${{ vars.SPOOL_SHARED_ACCOUNT_ID }}:role/ss-gh-plan
+      TF_IN_AUTOMATION: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OpenTofu v1.13.1 (checksum pinned here, reviewed in the PR)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o tofu.zip "https://github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_linux_amd64.zip"
+          echo "8ccbc6f8ee21d2827715f3c6e08a9b3e0209b1e62057c05067ef117e047c1a80  tofu.zip" | sha256sum -c -
+          unzip -q tofu.zip tofu
+          mv tofu "${RUNNER_TEMP}/tofu"
+          rm tofu.zip
+      - name: Assume ss-gh-plan in the Shared account (OIDC, read only)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.SPOOL_SHARED_ACCOUNT_ID }}:role/ss-gh-plan
+          aws-region: us-east-1
+          role-session-name: ss-plan-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: Init (state read through the read-only state role)
+        working-directory: infra/aws/identity
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/tofu" init -input=false -lockfile=readonly \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=aws/identity/stg/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="encrypt=true" \
+            -backend-config="kms_key_id=${STATE_KMS_KEY_ARN}" \
+            -backend-config="assume_role={role_arn=\"arn:aws:iam::${SHARED_ACCOUNT_ID}:role/ss-tfstate-identity-stg-ro\",session_name=\"ss-plan\"}"
+      - name: Point the provider (not the backend) at the read-only plan role in the identity account
+        run: |
+          set -euo pipefail
+          # Generated for this run only and never committed. The ambient credentials stay ss-gh-plan, so the S3 backend
+          # keeps re-assuming the read-only state role the same way on init and plan.
+          cat > infra/aws/identity/ci_override.tf <<TF
+          provider "aws" {
+            assume_role {
+              role_arn     = "arn:aws:iam::${IDENTITY_STG_ACCOUNT_ID}:role/ss-plan-readonly"
+              session_name = "ss-plan"
+            }
+          }
+          TF
+      - name: Plan (no lock, no apply)
+        working-directory: infra/aws/identity
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/tofu" plan -input=false -lock=false -no-color -detailed-exitcode -out="${RUNNER_TEMP}/tfplan" || code=$?
+          # 0 = no changes, 2 = changes (reported, not an error), anything else = failure
+          [ "${code:-0}" -eq 0 ] || [ "${code:-0}" -eq 2 ] || exit "${code}"
+          "${RUNNER_TEMP}/tofu" show -no-color "${RUNNER_TEMP}/tfplan" > "${RUNNER_TEMP}/plan.txt"
+          { echo '### aws/identity (stg) plan, first 200 lines'; echo '```'; head -n 200 "${RUNNER_TEMP}/plan.txt"; echo '```'; } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Keep the plan text for 14 days (never the binary plan file)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan-aws-identity-stg
+          path: ${{ runner.temp }}/plan.txt
+          retention-days: 14
+          if-no-files-found: error

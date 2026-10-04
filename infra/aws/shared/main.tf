@@ -572,6 +572,18 @@ data "aws_iam_policy_document" "plan_deny" {
     actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
     resources = [aws_kms_key.backup.arn]
   }
+  # ReadOnlyAccess includes s3:GetObject, which would let any pull-request run read every stack's state. State is read
+  # only through the read-only state roles (tfstate-access.tf), never with this role's own permissions (SPOOL-183).
+  statement {
+    effect    = "Deny"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.state_bucket}/*"]
+  }
+  statement {
+    effect    = "Deny"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+    resources = [data.aws_kms_key.state.arn]
+  }
 }
 resource "aws_iam_role_policy" "plan_deny" {
   name   = "plan-deny-backup-data"
