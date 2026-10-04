@@ -54,17 +54,25 @@ Identity accounts reach the bucket through a role in the Shared account (SPOOL-1
 export CLOUDFLARE_API_TOKEN=...   # from the dashboard, expiry 24h, never in a file
 AWS_PROFILE=ss-shared scripts/tofu-init.sh cloudflare/zone prod
 cd infra/cloudflare/zone
-tofu plan -out=tfplan             # review; first run after import must show ZERO changes
+tofu plan -var-file=../../envs/prod.auto.tfvars -out=tfplan   # review; see the first-plan rules below
+../../../scripts/tofu-plan-check.sh tfplan 'cloudflare_dns_record.t_pi[0]' 'cloudflare_zone_dnssec.this'   # first plan only
 tofu apply tfplan                 # never -auto-approve
 ```
 
-Before the first plan: `scripts/dns-export.sh`, then `tofu import` every existing record.
+`*.auto.tfvars` files load automatically only from the stack folder. `envs/prod.auto.tfvars` is outside it, so always pass `-var-file=../../envs/prod.auto.tfvars` (or copy the file into the stack folder; it stays gitignored either way).
+
+First plan (SPOOL-170): run `scripts/dns-export.sh`, then in the gitignored tfvars set `t_record_id`, `import_dnssec = true` (DNSSEC is already active on the live zone) and, only if an `http_ratelimit` entrypoint ruleset already exists, `ratelimit_ruleset_id`. The import blocks in `main.tf` bring those live resources under management.
+
+- The resolver record and DNSSEC must show **no change**. `prevent_destroy` does not stop an in-place update, so `scripts/tofu-plan-check.sh` (run from the stack folder) fails the check on any update, replace or create of those addresses. It checks only the addresses you name; read the rest of the plan yourself. Fix the variables to match the live resource; never apply a diff there.
+- An imported rate-limit ruleset is a **reviewed update**: the rules in `main.tf` replace the live rules. Read that part of the plan line by line.
+- Everything else is a create. Any other record the export lists needs its own import block first.
+- Clear `t_record_id`, `import_dnssec` and `ratelimit_ruleset_id` after the first apply. `prevent_destroy` guards the resolver record and DNSSEC; removing it needs a separate, labelled PR.
 
 Identity stacks: `AWS_PROFILE=ss-id-nonprod scripts/tofu-init.sh aws/identity stg`, then plan from `infra/aws/identity` with the same profile. Switching env means running the script again for the other env.
 
 ## Local checks
 
-`tofu fmt -check -recursive && tofu validate` in each stack (after `tofu init -backend=false`), then `checkov -d infra`.
+`tofu fmt -check -recursive && tofu validate` in each stack (after `tofu init -backend=false`), `tofu test` in stacks that have a `tests/` folder (offline, mocked provider), then `checkov -d infra`.
 
 ## Rules baked in
 

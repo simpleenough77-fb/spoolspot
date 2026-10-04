@@ -13,5 +13,9 @@ variable "env" {
 variable "d1_jurisdiction" {
   type        = string
   default     = "us" # D10: can only be set at creation [V]; changing it means a new database
-  description = "us or eu. Immutable."
+  description = "eu, us or fedramp. Immutable. Provider 5.27 accepts all three (schema and plan, checked 2026-10-04); acceptance by the Cloudflare API for us is [U] until the first apply."
+  validation {
+    condition     = contains(["eu", "us", "fedramp"], var.d1_jurisdiction)
+    error_message = "d1_jurisdiction must be eu, us or fedramp."
+  }
 }

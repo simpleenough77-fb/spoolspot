@@ -1,10 +1,42 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Every existing record MUST be imported first (scripts/dns-export.sh, plan section 5). The first plan must show zero changes.
+# SPOOL-170. First plan expectations (live resources are imported, never recreated):
+#   - The resolver A record (t_pi) and, if import_dnssec is true, cloudflare_zone_dnssec.this MUST show NO CHANGE.
+#     Run scripts/tofu-plan-check.sh on the saved plan: it fails on any update, replace or create of those addresses.
+#     A diff on t_pi means the variables do not match the live record: fix the variables, never apply the diff.
+#   - An imported http_ratelimit entrypoint ruleset is a REVIEWED UPDATE: the rules in this file replace the live rules.
+#     Read that part of the plan line by line before approving.
+#   - Every other resource in this stack is a CREATE on the first plan.
+#   - Run scripts/dns-export.sh first. Any other record the export lists must be imported too (add an import block)
+#     before apply, or the apply creates a duplicate or fails.
+# Clear t_record_id, ratelimit_ruleset_id and import_dnssec from the gitignored tfvars after the first apply.
+# prevent_destroy blocks destroy and replace. It does NOT block an in-place update, hence the plan check above.
+
+# ---------- Import of live resources (IDs come from gitignored tfvars, never from this file) ----------
+import {
+  for_each = var.t_record_id == null ? toset([]) : toset([var.t_record_id])
+  to       = cloudflare_dns_record.t_pi[0]
+  id       = "${var.zone_id}/${each.value}"
+}
+# A zone has ONE entrypoint ruleset per phase. If http_ratelimit already has one, creating a second fails or
+# overwrites it: import it, and read the plan, because the rules in this file replace the rules that exist.
+import {
+  for_each = var.ratelimit_ruleset_id == null ? toset([]) : toset([var.ratelimit_ruleset_id])
+  to       = cloudflare_ruleset.rate_limit_resolver
+  id       = "zones/${var.zone_id}/${each.value}"
+}
+# DNSSEC is already active on the live zone. Import it so the apply does not try to enable it again (import ID = zone ID, provider 5.27.0 docs).
+import {
+  for_each = var.import_dnssec ? toset([var.zone_id]) : toset([])
+  to       = cloudflare_zone_dnssec.this
+  id       = each.value
+}
 
 # ---------- DNSSEC ----------
 resource "cloudflare_zone_dnssec" "this" {
   zone_id = var.zone_id
   status  = "active" # Cloudflare Registrar adds the DS record itself [V]; verify with dig +short DS
+  # Removing this needs a separate, labelled PR, and for the account move follows the DNSSEC steps in the DNS and domain plan.
+  lifecycle { prevent_destroy = true }
 }
 
 # ---------- CAA ----------
@@ -55,6 +87,8 @@ resource "cloudflare_dns_record" "t_pi" {
   ttl     = 300
   proxied = false
   comment = "ADR-0001 phase 1; repointed to the Worker in phase 2 (gate G8)"
+  # Every NFC tag resolves through this record. Removing the protection needs a separate, labelled PR.
+  lifecycle { prevent_destroy = true }
 }
 resource "cloudflare_dns_record" "acme_delegation" {
   count   = var.acme_delegation_target == null ? 0 : 1

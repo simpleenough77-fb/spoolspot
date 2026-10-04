@@ -221,7 +221,7 @@ jobs:
           unzip -q tofu.zip tofu
           mv tofu "${RUNNER_TEMP}/tofu"
           rm tofu.zip
-      - name: OpenTofu fmt and validate (every stack, locked providers, no backend, no credentials)
+      - name: OpenTofu fmt, validate and offline tests (every stack, locked providers, no backend, no credentials)
         env:
           TF_IN_AUTOMATION: '1'
           TF_INPUT: '0'
@@ -231,7 +231,7 @@ jobs:
           "${tofu}" fmt -check -recursive -diff infra
           find infra -name '*.tf' -printf '%h\n' | sort -u | while read -r stack; do
             echo "::group::validate ${stack}"
-            (cd "${stack}" && "${tofu}" init -backend=false -input=false -lockfile=readonly && "${tofu}" validate)
+            (cd "${stack}" && "${tofu}" init -backend=false -input=false -lockfile=readonly && "${tofu}" validate && { [ ! -d tests ] || "${tofu}" test -no-color; })
             echo "::endgroup::"
           done
       - name: Checkov (Dockerfile, GitHub Actions, Terraform, CloudFormation)
