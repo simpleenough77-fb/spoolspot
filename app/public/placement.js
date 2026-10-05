@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// "Can I put this here?": pick a leaf, tap + or - for how many, and the page says what would happen.
+// "Can I put this here?": pick a place or a whole container, tap + or - for how many, and the page says what would happen.
 // It only asks; nothing is stored. A hard limit warns, a soft limit allows with a notice, and a leaf
 // with no capacity says so. Suggestions list where there is room and never include leaves with no
 // capacity set. Everything is chosen by tapping; there is nothing to type.
 import { getJson } from './api.js';
-import { leafPaths } from './tree.js';
+import { leafPaths, pickerNodes } from './tree.js';
 
 const MAX = 1000;
 // Set up again on every load: the previous listeners and any answer still in flight are dropped, so a
@@ -12,18 +12,32 @@ const MAX = 1000;
 let controller = null;
 let sequence = 0;
 
+const plural = (n, word) => `${String(n)} ${word}${n === 1 ? '' : 's'}`;
+
 export function message(check) {
   const { outcome, count } = check;
   const over = check.free_after === null ? 0 : Math.max(0, -check.free_after);
+  const inside = check.scope === 'container';
+  const where = inside ? ' in total' : '';
+  const skipped =
+    inside && check.leaves_without_capacity > 0
+      ? ` ${plural(check.leaves_without_capacity, 'place')} inside ${check.leaves_without_capacity === 1 ? 'has' : 'have'} no capacity set and ${check.leaves_without_capacity === 1 ? 'is' : 'are'} not counted.`
+      : '';
+  const spread =
+    inside && check.fits_in_one_place === false
+      ? ' The room is spread over several places; no single place holds all of it.'
+      : '';
   switch (outcome) {
     case 'ok':
-      return `Fits. ${check.free_after} free after adding ${count}.`;
+      return `Fits. ${check.free_after} free after adding ${count}${where}, ${inside ? `, counting ${plural(check.leaves_counted, 'place')}` : ''}.${spread}${skipped}`;
     case 'notice':
-      return `Notice: adding ${count} goes ${over} over the soft limit. You can still place it.`;
+      return `Notice: adding ${count} goes ${over} over${inside ? ' the room inside, and some places have a soft limit' : ' the soft limit'}. You can still place it.${skipped}`;
     case 'warning':
-      return `Warning: adding ${count} goes ${over} over the hard limit. Check before placing it.`;
+      return `Warning: adding ${count} goes ${over} over ${inside ? 'the room inside, and every counted place has a hard limit' : 'the hard limit'}. Check before placing it.${skipped}`;
     default:
-      return 'Capacity is not set for this location, so there is no limit to check.';
+      return inside
+        ? `No place inside has a capacity set, so there is no limit to check.${skipped}`
+        : 'Capacity is not set for this location, so there is no limit to check.';
   }
 }
 
@@ -33,7 +47,11 @@ function validCheck(c) {
     typeof c === 'object' &&
     typeof c.outcome === 'string' &&
     Number.isInteger(c.count) &&
-    (c.free_after === null || Number.isInteger(c.free_after))
+    (c.free_after === null || Number.isInteger(c.free_after)) &&
+    (c.scope === 'leaf' || c.scope === 'container') &&
+    Number.isInteger(c.leaves_counted) &&
+    Number.isInteger(c.leaves_without_capacity) &&
+    typeof c.fits_in_one_place === 'boolean'
   );
 }
 
@@ -75,21 +93,21 @@ export function setupPlacement(nodes, onError) {
     return Promise.resolve();
   }
   const labels = new Map(paths.map((p) => [p.id, p.label]));
+  const kinds = new Map();
   select.replaceChildren();
-  const groups = new Map();
-  for (const p of paths) {
-    let group = groups.get(p.group);
-    if (!group) {
-      group = document.createElement('optgroup');
-      group.label = p.group;
-      groups.set(p.group, group);
-      select.append(group);
-    }
+  for (const p of pickerNodes(nodes)) {
+    kinds.set(p.id, p.leaf ? 'leaf' : 'container');
     const option = document.createElement('option');
     option.value = p.id;
-    option.textContent = p.name;
-    group.append(option);
+    // Indented by depth; a container says it means anywhere inside it.
+    // The full path is the option text, so it stays unambiguous without the indentation.
+    option.textContent =
+      '\u00a0\u00a0'.repeat(p.depth) + (p.leaf ? p.label : `${p.label} (anywhere inside)`);
+    select.append(option);
   }
+  // Start on a place that holds units, not on Home.
+  const firstLeaf = paths[0];
+  if (firstLeaf) select.value = firstLeaf.id;
 
   let count = 1;
   // aria-disabled, not disabled: a button that has focus must not vanish from the tab order mid-tap.
@@ -105,9 +123,11 @@ export function setupPlacement(nodes, onError) {
     const mine = sequence;
     try {
       const id = encodeURIComponent(select.value);
+      // Inside a container, suggestions stay inside it; for a single place they cover everywhere.
+      const within = kinds.get(select.value) === 'container' ? `&within=${id}` : '';
       const [check, near] = await Promise.all([
         getJson(`/api/v1/locations/${id}/placement?count=${String(count)}`),
-        getJson(`/api/v1/placement-suggestions?count=${String(count)}`),
+        getJson(`/api/v1/placement-suggestions?count=${String(count)}${within}`),
       ]);
       if (mine !== sequence) return; // a newer tap has already asked
       if (!validCheck(check) || !validSuggestions(near)) throw new Error('unexpected data');
@@ -123,7 +143,9 @@ export function setupPlacement(nodes, onError) {
       }
       if (near.suggestions.length === 0) {
         const li = document.createElement('li');
-        li.textContent = 'No location with a capacity set has room.';
+        li.textContent = within
+          ? 'No place inside has a capacity set and room.'
+          : 'No location with a capacity set has room.';
         suggestions.append(li);
       }
     } catch (error) {

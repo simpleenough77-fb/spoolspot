@@ -139,7 +139,6 @@ export function createApp(options: AppOptions): Hono<Env> {
     }
     const result = await c.get('data').placementCheck(id, count);
     if (result === 'not_found') return c.json({ error: 'not_found' }, 404);
-    if (result === 'not_a_leaf') return c.json({ error: 'not_a_leaf' }, 422);
     return c.json(result);
   });
 
@@ -151,14 +150,20 @@ export function createApp(options: AppOptions): Hono<Env> {
     const typeValues = c.req.queries('type');
     const typeText = single(typeValues);
     const type = LEAF_TYPES.find((t) => t === typeText);
+    const withinValues = c.req.queries('within');
+    const within = single(withinValues);
     if (
       count === null ||
       (typeValues !== undefined && type === undefined) ||
-      (typeValues?.length ?? 0) > 1
+      (typeValues?.length ?? 0) > 1 ||
+      (withinValues !== undefined &&
+        (within === undefined || within.length > 64 || !LOCATION_ID.test(within)))
     ) {
       return c.json({ error: 'invalid_request' }, 400);
     }
-    return c.json({ suggestions: await c.get('data').placementSuggestions(count, type) });
+    const suggestions = await c.get('data').placementSuggestions(count, type, within);
+    if (suggestions === 'not_found') return c.json({ error: 'not_found' }, 404);
+    return c.json({ suggestions });
   });
 
   app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));

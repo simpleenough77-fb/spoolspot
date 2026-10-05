@@ -149,6 +149,113 @@ describe('checkPlacement', () => {
   });
 });
 
+function node(nodes: readonly LocationNode[], id: string): LocationNode {
+  const walk = (list: readonly LocationNode[]): LocationNode | undefined => {
+    for (const n of list) {
+      if (n.id === id) return n;
+      const hit = walk(n.children);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  const found = walk(nodes);
+  if (!found) throw new Error(`no node ${id}`);
+  return found;
+}
+
+describe('checkPlacement for a container', () => {
+  const tree = buildTree(rows);
+
+  it('adds up the room of the leaves with a capacity set and says what it left out', () => {
+    // shelf-1 has 6 free, shelf-2 none; box-1 is over (0 free); box-2 has no capacity.
+    expect(checkPlacement(node(tree, 'home'), 6)).toMatchObject({
+      scope: 'container',
+      outcome: 'ok',
+      free: 6,
+      free_after: 0,
+      leaves_counted: 3,
+      leaves_without_capacity: 1,
+    });
+  });
+
+  it('is a notice over the total when a counted leaf is soft, a warning when all are hard', () => {
+    expect(checkPlacement(node(tree, 'home'), 7).outcome).toBe('notice');
+    expect(checkPlacement(node(tree, 'active'), 7)).toMatchObject({
+      outcome: 'warning',
+      free_after: -1,
+    });
+  });
+
+  it('has no limit to check when no leaf inside has a capacity', () => {
+    const none = buildTree([container('home', null), leaf('x', 'home', null, 2, 'soft')]);
+    expect(checkPlacement(node(none, 'home'), 1)).toMatchObject({
+      outcome: 'capacity_not_set',
+      free: null,
+      free_after: null,
+      leaves_counted: 0,
+      leaves_without_capacity: 1,
+    });
+    const empty = buildTree([container('home', null), container('room', 'home')]);
+    expect(checkPlacement(node(empty, 'room'), 1).outcome).toBe('capacity_not_set');
+  });
+
+  it('skips slots unless the container holds only slots', () => {
+    const mixed = buildTree([
+      container('home', null),
+      leaf('shelf', 'home', 2, 0),
+      leaf('slot', 'home', 1, 0, 'hard', 'active_use'),
+    ]);
+    expect(checkPlacement(node(mixed, 'home'), 3)).toMatchObject({ outcome: 'warning', free: 2 });
+    const ams = buildTree([
+      container('home', null),
+      container('ams', 'home'),
+      leaf('s1', 'ams', 1, 0, 'hard', 'active_use'),
+      leaf('s2', 'ams', 1, 1, 'hard', 'active_use'),
+    ]);
+    expect(checkPlacement(node(ams, 'ams'), 1)).toMatchObject({ outcome: 'ok', free: 1 });
+  });
+
+  it('says when the room is spread over several places', () => {
+    const spread = buildTree([
+      container('home', null),
+      leaf('a', 'home', 5, 2),
+      leaf('b', 'home', 5, 2),
+    ]);
+    expect(checkPlacement(node(spread, 'home'), 5)).toMatchObject({
+      outcome: 'ok',
+      fits_in_one_place: false,
+    });
+    expect(checkPlacement(node(spread, 'home'), 3).fits_in_one_place).toBe(true);
+  });
+
+  it('reports the leaf scope for a leaf', () => {
+    expect(checkPlacement(find(tree, 'shelf-1'), 1)).toMatchObject({
+      scope: 'leaf',
+      leaves_counted: 1,
+    });
+  });
+});
+
+describe('suggestPlacements within a container', () => {
+  const tree = buildTree(rows);
+  it('only offers leaves inside it', () => {
+    expect(suggestPlacements(tree, 1, undefined, 5, node(tree, 'passive'))).toEqual([]);
+    expect(
+      suggestPlacements(tree, 1, undefined, 5, node(tree, 'active')).map((s) => s.location_id),
+    ).toEqual(['shelf-1']);
+  });
+  it('offers slots when the container holds only slots', () => {
+    const ams = buildTree([
+      container('home', null),
+      container('ams', 'home'),
+      leaf('s1', 'ams', 1, 0, 'hard', 'active_use'),
+    ]);
+    expect(
+      suggestPlacements(ams, 1, undefined, 5, node(ams, 'ams')).map((s) => s.location_id),
+    ).toEqual(['s1']);
+  });
+});
+
 describe('suggestPlacements', () => {
   const tree = buildTree(rows);
 
