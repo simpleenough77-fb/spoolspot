@@ -16,6 +16,8 @@ export interface Config {
   readonly allowLan: boolean;
   /** 6-character code at the start of every tag path (ADR-0001); null leaves the tag route off. */
   readonly instanceCode: string | null;
+  /** SPOOLSPOT_SECURE_COOKIES=1 or 0 forces Secure cookies on or off (behind a TLS-terminating proxy); unset follows the connection. */
+  readonly secureCookies: boolean | undefined;
 }
 
 const LOOPBACK = ['localhost', '127.0.0.1', '[::1]'];
@@ -63,5 +65,11 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     tenantId: SELF_HOST_TENANT_ID,
     allowLan: env.SPOOLSPOT_ALLOW_LAN === '1',
     instanceCode: parseInstanceCode(env.SPOOLSPOT_INSTANCE_CODE),
+    secureCookies:
+      env.SPOOLSPOT_SECURE_COOKIES === '1'
+        ? true
+        : env.SPOOLSPOT_SECURE_COOKIES === '0'
+          ? false
+          : undefined,
   };
 }

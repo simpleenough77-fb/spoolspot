@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // DEV ONLY. One bearer token from the environment maps to one fixed tenant. It exists so Slice 1 can be
-// demonstrated behind the real Principal boundary. It has no users, no rate limiting and no rotation, and
+// demonstrated behind the real Principal boundary. It has no users and no rotation (failed attempts are rate limited per address by the HTTP layer), and
 // is replaced for self-hosting by the local password provider (SPOOL-175). Never use it on the internet.
 import { Scope, type AuthProvider, type Principal } from './principal.ts';
 

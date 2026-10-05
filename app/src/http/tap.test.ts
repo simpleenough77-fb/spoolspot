@@ -259,6 +259,27 @@ describe('sessions', () => {
     ).toBe(401);
   });
 
+  it('does not trust a forwarded header to decide Secure, and can be told explicitly', async () => {
+    const { app, sql } = await setup();
+    const spoofed = await app.request('http://localhost/api/v1/session', {
+      method: 'POST',
+      headers: { host: 'localhost', ...bearer, 'x-forwarded-proto': 'https' },
+    });
+    expect(spoofed.headers.get('set-cookie')).not.toContain('Secure');
+    const behindProxy = createApp({
+      auth: createDevTokenProvider({ token: TEST_TOKEN, tenantId: TENANT_A }),
+      data: (p) => createScopedData(sql, p),
+      allowedHosts: ['localhost'],
+      sessions: createMemorySessionStore(),
+      secureCookies: true,
+    });
+    const res = await behindProxy.request('http://localhost/api/v1/session', {
+      method: 'POST',
+      headers: { host: 'localhost', ...bearer },
+    });
+    expect(res.headers.get('set-cookie')).toMatch(/^__Host-spoolspot_session=.*; Secure/);
+  });
+
   it('refuses a wrong token and a missing, malformed or unknown cookie alike', async () => {
     const { request } = await setup();
     const bad = await request('/api/v1/session', {
@@ -570,6 +591,8 @@ describe('POST /api/v1/clips/:id/move', () => {
       [`{"to":"${'a'.repeat(65)}"}`],
       ['{"to":"loc1.shelf-2","confirm":"yes"}'],
       ['{"to":"loc1.shelf-2","extra":1}'],
+      ['{"to":"loc1.shelf-2","__proto__":{}}'],
+      ['{"to":"loc1.shelf-2","pad":"\u00e9"}', { ...bearer, ...json, 'content-length': '99999' }],
       [`{"to":"loc1.shelf-2","pad":"${'x'.repeat(2000)}"}`],
     ];
     for (const [body, headers] of bad) {
@@ -600,6 +623,38 @@ describe('POST /api/v1/clips/:id/move', () => {
     });
     expect(readOnly.status).toBe(403);
     expect(s.locationOf(s.clipId)).toBe('loc1.shelf-1');
+  });
+
+  it('does not store a move when the clip or the room changed since it was checked', async () => {
+    const s = await setup();
+    // Another request fills the last place of a hard limit after this one checked: simulate by
+    // racing the guard, filling the shelf between the check and the write.
+    s.fill('loc1.shelf-2', 15);
+    const data = createScopedData(
+      s.sql,
+      s.principalFor(TENANT_A, [Scope.LocationsRead, Scope.InventoryWrite]),
+    );
+    const realBatch = s.sql.batch.bind(s.sql);
+    s.sql.batch = async (statements) => {
+      s.fill('loc1.shelf-2', 1);
+      await realBatch(statements);
+    };
+    const result = await data.moveClip(s.clipId, 'loc1.shelf-2', false);
+    expect(result).toEqual({ ok: false, refusal: 'conflict' });
+    expect(s.locationOf(s.clipId)).toBe('loc1.shelf-1');
+    expect(s.events()).toHaveLength(0);
+
+    // A clip that someone else already moved is not moved again from where it no longer is.
+    s.sql.batch = async (statements) => {
+      s.db
+        .prepare("UPDATE clip SET location_id = 'closet-storage.shelf-1' WHERE id = ?")
+        .run(s.clipId);
+      await realBatch(statements);
+    };
+    const stale = await data.moveClip(s.clipId, 'loc1.shelf-2', true);
+    expect(stale).toEqual({ ok: false, refusal: 'conflict' });
+    expect(s.locationOf(s.clipId)).toBe('closet-storage.shelf-1');
+    expect(s.events()).toHaveLength(0);
   });
 
   it('keeps the event log append-only: a second move adds a row and changes none', async () => {

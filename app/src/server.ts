@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Node entry point. Usage: SPOOLSPOT_DEV_TOKEN=<32+ chars> node app/src/server.ts
-// DEV ONLY until SPOOL-175 lands: plain HTTP, one fixed token, no rate limiting.
+// DEV ONLY until SPOOL-175 lands: plain HTTP and one fixed token (failed sign-ins and tag lookups are
+// rate limited per connecting address, an address a reverse proxy would hide).
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import { relative, resolve } from 'node:path';
@@ -13,6 +14,7 @@ import { createScopedData } from './data/scoped.ts';
 import { runMigrations } from './db/migrate.ts';
 import { openDatabase, sqlFromDatabase } from './db/sqlite.ts';
 import { createApp } from './http/app.ts';
+import { clientKeyFor } from './http/rate-limit.ts';
 
 const config = loadConfig(process.env);
 let auth;
@@ -47,7 +49,8 @@ const app = createApp({
   ...(tagPages ? { tagPages } : {}),
   // The connecting address, for rate limiting only. It is not logged or stored beyond the window.
   clientKey: (c) =>
-    (c.env as { incoming?: IncomingMessage }).incoming?.socket.remoteAddress ?? 'unknown',
+    clientKeyFor((c.env as { incoming?: IncomingMessage }).incoming?.socket.remoteAddress),
+  ...(config.secureCookies === undefined ? {} : { secureCookies: config.secureCookies }),
   data: (principal) => createScopedData(sql, principal),
   allowedHosts: config.allowedHosts,
   staticHandler: serveStatic({

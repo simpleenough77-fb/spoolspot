@@ -42,13 +42,13 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
         return w.count <= options.limit;
       }
       if (windows.size >= maxKeys) {
+        // Make room in one pass: expired windows first, then the oldest tenth. Doing it in batches
+        // keeps a flood of new keys from costing a full scan on every request.
         const t = now();
-        for (const [k, v] of windows) if (t - v.start >= options.windowMs) windows.delete(k);
-        // Still full of live windows: drop the oldest rather than refuse everyone.
-        while (windows.size >= maxKeys) {
-          const oldest = windows.keys().next();
-          if (oldest.done) break;
-          windows.delete(oldest.value);
+        const target = Math.floor(maxKeys * 0.9);
+        for (const [k, v] of windows) {
+          if (windows.size <= target) break;
+          if (t - v.start >= options.windowMs || windows.size > target) windows.delete(k);
         }
       }
       windows.set(key, { start: now(), count: 1 });
@@ -64,4 +64,26 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
       return Math.max(1, Math.ceil((w.start + options.windowMs - now()) / 1000));
     },
   };
+}
+
+/**
+ * A rate-limit key for a connecting address. IPv6 addresses count as their /64, so rotating through one
+ * network's addresses is still one client; IPv4 and IPv4-mapped addresses are used whole.
+ */
+export function clientKeyFor(address: string | undefined): string {
+  if (address === undefined || address === '') return 'unknown';
+  const lower = address.toLowerCase();
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(lower);
+  if (mapped?.[1]) return mapped[1];
+  if (!lower.includes(':')) return lower;
+  // Expand "::" so the first four groups are the /64.
+  const [head = '', tail] = lower.split('::');
+  const headGroups = head === '' ? [] : head.split(':');
+  const tailGroups = tail === undefined || tail === '' ? [] : tail.split(':');
+  const missing = Math.max(0, 8 - headGroups.length - tailGroups.length);
+  const groups = [...headGroups, ...Array<string>(missing).fill('0'), ...tailGroups];
+  return `${groups
+    .slice(0, 4)
+    .map((g) => g.padStart(4, '0'))
+    .join(':')}::/64`;
 }
