@@ -35,7 +35,9 @@ describe('demo data', () => {
     expect(find(tree, 'loc1.shelf-1')).toMatchObject({ used: 10, free: 6 });
     expect(find(tree, 'loc1.shelf-2')).toMatchObject({ used: 16, free: 0 });
     expect(find(tree, 'closet-storage.shelf-1')).toMatchObject({ capacity: 4, used: 5, over: 1 });
-    const suggested = (await data.placementSuggestions(1)).map((s) => s.location_id);
+    const all = await data.placementSuggestions(1);
+    if (all === 'not_found') throw new Error('unexpected');
+    const suggested = all.map((s) => s.location_id);
     expect(suggested).not.toContain('loc1.shelf-2');
     expect(suggested).not.toContain('closet-storage.shelf-1');
   });

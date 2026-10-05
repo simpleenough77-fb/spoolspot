@@ -93,6 +93,32 @@ export function leafPaths(nodes, path = [], isRoot = true) {
   });
 }
 
+/**
+ * Every place in tree order for the placement picker, containers included. `depth` indents the option
+ * text; Home is depth 0.
+ */
+export function pickerNodes(nodes, depth = 0, path = []) {
+  return nodes.flatMap((node) => {
+    // The path without Home, so two shelves with the same name in different rooms read differently.
+    const here = depth === 0 ? [] : [...path, node.name];
+    const parent = path.at(-1);
+    const shown =
+      node.leaf && parent !== undefined && node.name.startsWith(parent)
+        ? [...path.slice(0, -1), node.name]
+        : here;
+    return [
+      {
+        id: node.id,
+        name: node.name,
+        label: shown.join(' › ') || node.name,
+        leaf: node.leaf,
+        depth,
+      },
+      ...pickerNodes(node.children, depth + 1, here),
+    ];
+  });
+}
+
 /** Loads and renders the tree; returns the nodes so the page can build the picker from them. */
 export async function showTree() {
   const root = document.getElementById('tree');

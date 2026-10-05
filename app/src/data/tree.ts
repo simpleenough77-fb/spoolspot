@@ -98,39 +98,94 @@ export type PlacementOutcome = 'ok' | 'notice' | 'warning' | 'capacity_not_set';
 
 export interface PlacementCheck {
   location_id: string;
+  /** 'leaf' for a place that holds units; 'container' for anywhere inside a container. */
+  scope: 'leaf' | 'container';
   count: number;
+  /** A leaf's mode; null for a container. */
   capacity_mode: CapacityMode | null;
   capacity: number | null;
   used: number;
   free: number | null;
   /** Free places left after the placement; null when capacity is not set. Negative means over. */
   free_after: number | null;
+  /** Leaves whose room was counted (capacity set). Slots are skipped unless the container holds only slots. */
+  leaves_counted: number;
+  /** Leaves inside that were left out of the count because their capacity is not set yet. */
+  leaves_without_capacity: number;
+  /** True when one counted place has room for all `count` units; false when the room is spread over several. */
+  fits_in_one_place: boolean;
   outcome: PlacementOutcome;
 }
 
 /**
- * What would happen if `count` units were placed at this leaf. Read-only: nothing is stored.
+ * What would happen if `count` units were placed at this location. Read-only: nothing is stored.
  * ok: fits. notice: over a soft limit (allowed). warning: over a hard limit (confirm first).
  * capacity_not_set: there is no limit to check against yet.
+ *
+ * For a container the question is "is there room somewhere inside": the room of every leaf below it
+ * that has a capacity is added up, the same way the tree rolls it up. active_use slots are loaded by
+ * the load workflow, so they are left out unless the container holds nothing else (an AMS, say). Over
+ * the total, the outcome is a notice when any counted leaf has a soft limit (the units can go there),
+ * and a warning when every counted leaf is a hard limit.
  */
-export function checkPlacement(leaf: LocationNode, count: number): PlacementCheck {
-  const base = {
-    location_id: leaf.id,
-    count,
-    capacity_mode: leaf.capacity_mode,
-    capacity: leaf.capacity,
-    used: leaf.used,
-    free: leaf.free,
-  };
-  if (leaf.capacity === null) {
-    return { ...base, free_after: null, outcome: 'capacity_not_set' };
+export function checkPlacement(node: LocationNode, count: number): PlacementCheck {
+  if (node.leaf) {
+    const base = {
+      location_id: node.id,
+      scope: 'leaf' as const,
+      count,
+      capacity_mode: node.capacity_mode,
+      capacity: node.capacity,
+      used: node.used,
+      free: node.free,
+      leaves_counted: node.capacity === null ? 0 : 1,
+      leaves_without_capacity: node.capacity === null ? 1 : 0,
+      fits_in_one_place: node.capacity !== null && (node.free ?? 0) >= count,
+    };
+    if (node.capacity === null) return { ...base, free_after: null, outcome: 'capacity_not_set' };
+    const freeAfter = node.capacity - node.used - count;
+    if (freeAfter >= 0) return { ...base, free_after: freeAfter, outcome: 'ok' };
+    return {
+      ...base,
+      free_after: freeAfter,
+      outcome: node.capacity_mode === 'hard' ? 'warning' : 'notice',
+    };
   }
-  const freeAfter = leaf.capacity - leaf.used - count;
-  if (freeAfter >= 0) return { ...base, free_after: freeAfter, outcome: 'ok' };
+  const inside = leaves(node.children);
+  const slotsOnly = inside.length > 0 && inside.every((l) => l.type === 'active_use');
+  const considered = slotsOnly ? inside : inside.filter((l) => l.type !== 'active_use');
+  const counted = considered.filter((l) => l.capacity !== null);
+  const capacity = sum(counted.map((l) => l.capacity ?? 0));
+  const used = sum(counted.map((l) => l.used));
+  const free = sum(counted.map((l) => l.free ?? 0));
+  const base = {
+    location_id: node.id,
+    scope: 'container' as const,
+    count,
+    capacity_mode: null,
+    leaves_counted: counted.length,
+    leaves_without_capacity: considered.length - counted.length,
+    fits_in_one_place: counted.some((l) => (l.free ?? 0) >= count),
+  };
+  if (counted.length === 0) {
+    return {
+      ...base,
+      capacity: null,
+      used: sum(considered.map((l) => l.used)),
+      free: null,
+      free_after: null,
+      outcome: 'capacity_not_set',
+    };
+  }
+  const freeAfter = free - count;
+  const anySoft = counted.some((l) => l.capacity_mode === 'soft');
   return {
     ...base,
+    capacity,
+    used,
+    free,
     free_after: freeAfter,
-    outcome: leaf.capacity_mode === 'hard' ? 'warning' : 'notice',
+    outcome: freeAfter >= 0 ? 'ok' : anySoft ? 'notice' : 'warning',
   };
 }
 
@@ -153,13 +208,18 @@ export function suggestPlacements(
   count: number,
   type?: LocationType,
   limit = 5,
+  within?: LocationNode,
 ): PlacementSuggestion[] {
-  const withRoom = leaves(nodes).flatMap((l) => {
+  const scope = leaves(within ? [within] : nodes);
+  // Asking about a place that holds only slots (an AMS, or one slot) means the slots are wanted.
+  const slotsOnly =
+    within !== undefined && scope.length > 0 && scope.every((l) => l.type === 'active_use');
+  const withRoom = scope.flatMap((l) => {
     const mode = l.capacity_mode;
     const free = l.free ?? 0;
     const eligible = l.capacity !== null && mode !== null && free > 0;
     // Slots are filled by the load workflow, so they are suggested only when asked for by type.
-    const typeOk = type === undefined ? l.type !== 'active_use' : l.type === type;
+    const typeOk = type === undefined ? slotsOnly || l.type !== 'active_use' : l.type === type;
     return eligible && typeOk ? [{ l, mode, free }] : [];
   });
   return withRoom

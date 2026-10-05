@@ -207,11 +207,31 @@ describe('GET /api/v1/locations/:id/placement', () => {
     ).toBe('warning');
   });
 
-  it('refuses a container with 422', async () => {
+  it('answers for a container: room is added up over the leaves inside', async () => {
     const { get } = await setup();
     const res = await get('/api/v1/locations/loc1/placement?count=1');
-    expect(res.status).toBe(422);
-    expect(await res.json()).toEqual({ error: 'not_a_leaf' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PlacementCheck;
+    expect(body.scope).toBe('container');
+    expect(body.location_id).toBe('loc1');
+    expect(body.leaves_counted).toBeGreaterThan(0);
+    const home = (await (
+      await get('/api/v1/locations/home/placement?count=1')
+    ).json()) as PlacementCheck;
+    expect(home.scope).toBe('container');
+  });
+
+  it('reports the leaf scope for a leaf', async () => {
+    const { get } = await setup();
+    const body = (await (
+      await get('/api/v1/locations/loc1.shelf-1/placement?count=1')
+    ).json()) as PlacementCheck;
+    expect(body).toMatchObject({
+      scope: 'leaf',
+      leaves_counted: 1,
+      leaves_without_capacity: 0,
+      fits_in_one_place: true,
+    });
   });
 
   it("answers 404 for an unknown id and for another tenant's id alike", async () => {
@@ -272,7 +292,7 @@ describe('GET /api/v1/locations/:id/placement', () => {
     expect([400, 404]).toContain(res.status);
   });
 
-  it("answers 404, not 422, for another tenant's container id", async () => {
+  it("answers 404 for another tenant's container id", async () => {
     const { get, db } = await setup();
     db.prepare(
       "INSERT INTO location (tenant_id, id, name, type, parent, leaf, tag_source) VALUES (?, 'b-room', 'B room', 'container', 'home', 0, NULL)",
@@ -293,6 +313,40 @@ describe('GET /api/v1/locations/:id/placement', () => {
       locations: LocationNode[];
     };
     expect(find(locations, 'closet-storage.shelf-1')).toMatchObject({ used: 0 });
+  });
+});
+
+describe('GET /api/v1/placement-suggestions?within=', () => {
+  it('limits suggestions to the chosen container', async () => {
+    const { get } = await setup();
+    const res = await get('/api/v1/placement-suggestions?count=1&within=loc1');
+    expect(res.status).toBe(200);
+    const { suggestions } = (await res.json()) as { suggestions: { location_id: string }[] };
+    expect(suggestions.length).toBeGreaterThan(0);
+    expect(suggestions.every((s) => s.location_id.startsWith('loc1.'))).toBe(true);
+  });
+
+  it("answers 404 for an unknown id and for another tenant's id", async () => {
+    const { get, db } = await setup();
+    db.prepare(
+      "INSERT INTO location (tenant_id, id, name, type, parent, leaf, tag_source) VALUES (?, 'b-room', 'B room', 'container', 'home', 0, NULL)",
+    ).run(TENANT_B);
+    expect((await get('/api/v1/placement-suggestions?count=1&within=b-room')).status).toBe(404);
+    expect((await get('/api/v1/placement-suggestions?count=1&within=nope')).status).toBe(404);
+  });
+
+  it('accepts a leaf as within and returns only that leaf', async () => {
+    const { get } = await setup();
+    const res = await get('/api/v1/placement-suggestions?count=1&within=loc1.shelf-1');
+    const { suggestions } = (await res.json()) as { suggestions: { location_id: string }[] };
+    expect(suggestions.map((s) => s.location_id)).toEqual(['loc1.shelf-1']);
+  });
+
+  it('refuses a bad or repeated within', async () => {
+    const { get } = await setup();
+    for (const q of ['within=', 'within=a&within=b', 'within=%2e%2e', `within=${'a'.repeat(65)}`]) {
+      expect((await get(`/api/v1/placement-suggestions?count=1&${q}`)).status).toBe(400);
+    }
   });
 });
 
