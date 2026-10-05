@@ -42,6 +42,7 @@ const stubData = (partial: Partial<ScopedData>): ScopedData => ({
   locationTree: unused,
   placementCheck: unused,
   placementSuggestions: unused,
+  resolveTag: unused,
   ...partial,
 });
 

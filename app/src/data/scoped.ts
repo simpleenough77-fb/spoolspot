@@ -14,6 +14,7 @@ import {
   type PlacementCheck,
   type PlacementSuggestion,
 } from './tree.ts';
+import { normalizeTagId } from './tags.ts';
 
 export interface LocationTypeSummary {
   type: LocationType;
@@ -32,7 +33,18 @@ export interface LocationSummary {
 /** Why a placement check cannot be answered. Unknown ids and other tenants' ids look the same. */
 export type PlacementRefusal = 'not_found';
 
+/** What a tag points at, in the caller's tenant. */
+export interface TagTarget {
+  kind: 'location' | 'clip';
+  target_id: string;
+}
+
 export interface ScopedData {
+  /**
+   * Looks a tag up in the caller's tenant. A malformed ID, an unknown ID and another tenant's ID all
+   * give null, so nothing can be learned from the difference.
+   */
+  resolveTag(tagId: string): Promise<TagTarget | null>;
   locationSummary(): Promise<LocationSummary>;
   locationTree(): Promise<LocationNode[]>;
   /** Read-only: what would happen if `count` units were placed at the leaf, or anywhere in the container. */
@@ -85,6 +97,16 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     async locationTree(): Promise<LocationNode[]> {
       require(Scope.LocationsRead);
       return loadTree();
+    },
+    async resolveTag(tagId) {
+      require(Scope.LocationsRead);
+      const id = normalizeTagId(tagId);
+      if (id === null) return null;
+      const rows = await sql.all<TagTarget>(
+        'SELECT kind, target_id FROM tag WHERE tenant_id = ? AND tag_id = ?',
+        [tenantId, id],
+      );
+      return rows[0] ?? null;
     },
     async placementCheck(locationId, count) {
       require(Scope.LocationsRead);
