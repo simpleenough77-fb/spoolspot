@@ -49,3 +49,17 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ SPOOLSPOT_ALLOWED_HOSTS: ' , ' })).toThrow(/ALLOWED_HOSTS/);
   });
 });
+
+describe('instance code', () => {
+  it('is off unless set, and upper-cases a valid code', () => {
+    expect(loadConfig({}).instanceCode).toBeNull();
+    expect(loadConfig({ SPOOLSPOT_INSTANCE_CODE: '  ' }).instanceCode).toBeNull();
+    expect(loadConfig({ SPOOLSPOT_INSTANCE_CODE: 'ab12cd' }).instanceCode).toBe('AB12CD');
+  });
+
+  it('refuses a code that is not 6 characters of the tag alphabet', () => {
+    for (const bad of ['AB12C', 'AB12CDE', 'AB12CI', 'AB12CL', 'AB12CO', 'AB12CU', 'AB-2CD']) {
+      expect(() => loadConfig({ SPOOLSPOT_INSTANCE_CODE: bad }), bad).toThrow(/INSTANCE_CODE/);
+    }
+  });
+});

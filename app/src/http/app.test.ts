@@ -43,6 +43,9 @@ const stubData = (partial: Partial<ScopedData>): ScopedData => ({
   placementCheck: unused,
   placementSuggestions: unused,
   resolveTag: unused,
+  tagView: unused,
+  clipsAt: unused,
+  moveClip: unused,
   ...partial,
 });
 

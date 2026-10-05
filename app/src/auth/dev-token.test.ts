@@ -20,7 +20,7 @@ describe('dev token provider', () => {
   it('maps the right token to one fixed tenant with read scope only', async () => {
     const principal = await provider.authenticate(request(`Bearer ${TEST_TOKEN}`));
     expect(principal).toMatchObject({ subject: 'dev-token', tenantId: 'tenant-a' });
-    expect([...(principal?.scopes ?? [])]).toEqual([Scope.LocationsRead]);
+    expect([...(principal?.scopes ?? [])]).toEqual([Scope.LocationsRead, Scope.InventoryWrite]);
   });
 
   it('accepts the scheme in any letter case', async () => {

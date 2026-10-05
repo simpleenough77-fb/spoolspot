@@ -14,6 +14,8 @@ export interface Config {
   readonly tenantId: string;
   /** Explicit opt-in to listen beyond this computer (SPOOLSPOT_ALLOW_LAN=1). */
   readonly allowLan: boolean;
+  /** 6-character code at the start of every tag path (ADR-0001); null leaves the tag route off. */
+  readonly instanceCode: string | null;
 }
 
 const LOOPBACK = ['localhost', '127.0.0.1', '[::1]'];
@@ -25,6 +27,18 @@ export function isLoopback(host: string): boolean {
     .replace(/^\[|\]$/g, '');
   if (h === 'localhost' || h === '::1' || h === '::ffff:127.0.0.1') return true;
   return isIPv4(h) && h.startsWith('127.');
+}
+
+/** Six characters from the tag alphabet (0-9, A-Z without I, L, O, U), or null when unset. */
+export function parseInstanceCode(text: string | undefined): string | null {
+  if (text === undefined || text.trim() === '') return null;
+  const code = text.trim().toUpperCase();
+  if (!/^[0-9A-HJKMNP-TV-Z]{6}$/.test(code)) {
+    throw new Error(
+      'SPOOLSPOT_INSTANCE_CODE must be 6 characters from 0-9 and A-Z without I, L, O, U',
+    );
+  }
+  return code;
 }
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -48,5 +62,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     devToken: env.SPOOLSPOT_DEV_TOKEN ?? '',
     tenantId: SELF_HOST_TENANT_ID,
     allowLan: env.SPOOLSPOT_ALLOW_LAN === '1',
+    instanceCode: parseInstanceCode(env.SPOOLSPOT_INSTANCE_CODE),
   };
 }
