@@ -1,0 +1,104 @@
+{
+  "version": "0.1",
+  "generated": "2026-10-05",
+  "filaments": [
+    {
+      "id": "9b2044fa-3905-4b37-b3f8-4f48a692bd3b",
+      "manufacturer": "Sample Filament Co",
+      "type": "PLA",
+      "color": "Black",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "6d8396c6-0197-43f5-9882-d0eee627d52b",
+      "manufacturer": "Sample Filament Co",
+      "type": "PLA",
+      "color": "White",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "01b89ecf-c009-49ea-8670-b279d4f61148",
+      "manufacturer": "Sample Filament Co",
+      "type": "PLA",
+      "color": "Red",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "eac621cb-b8bb-4327-9ca5-255c546dbd22",
+      "manufacturer": "Sample Filament Co",
+      "type": "PLA",
+      "color": "Blue",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "c38fbf25-78dd-4cba-bd99-add627c1b325",
+      "manufacturer": "Sample Filament Co",
+      "type": "PLA",
+      "color": "Grey",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "943661ff-41ff-418e-9a42-b8e8ce4764d7",
+      "manufacturer": "Sample Filament Co",
+      "type": "PETG",
+      "color": "Black",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "a69b4d16-42ac-48ab-a082-894481bb8399",
+      "manufacturer": "Sample Filament Co",
+      "type": "PETG",
+      "color": "White",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "296089dd-ac8c-4771-9f22-96662bef1124",
+      "manufacturer": "Sample Filament Co",
+      "type": "PETG",
+      "color": "Clear",
+      "spool_kind": "disposable"
+    },
+    {
+      "id": "42c9050c-6888-46c5-b652-3fb2b39fa090",
+      "manufacturer": "Example Labs",
+      "type": "PLA",
+      "color": "Black",
+      "spool_kind": "refillable"
+    },
+    {
+      "id": "4db6bd48-e6a2-459a-931a-e16d0081bb6d",
+      "manufacturer": "Example Labs",
+      "type": "PLA",
+      "color": "White",
+      "spool_kind": "refillable"
+    },
+    {
+      "id": "01ebac1c-3c87-4792-8082-062a6a56ca92",
+      "manufacturer": "Example Labs",
+      "type": "PLA",
+      "color": "Green",
+      "spool_kind": "refillable"
+    },
+    {
+      "id": "f61d347c-8407-484d-9f85-f15ef513fa71",
+      "manufacturer": "Example Labs",
+      "type": "PETG",
+      "color": "Black",
+      "spool_kind": "refillable"
+    },
+    {
+      "id": "8178db98-0954-4e14-b427-40143d32d497",
+      "manufacturer": "Example Labs",
+      "type": "PETG",
+      "color": "Orange",
+      "spool_kind": "refillable"
+    },
+    {
+      "id": "2a703b97-e1e1-4da4-ab8a-e93f224a98f6",
+      "manufacturer": "Example Labs",
+      "type": "Silk PLA",
+      "color": "Gold",
+      "spool_kind": "refillable"
+    }
+  ]
+}

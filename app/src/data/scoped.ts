@@ -14,6 +14,7 @@ import {
   type PlacementCheck,
   type PlacementSuggestion,
 } from './tree.ts';
+import { createStockOps, type StockOps } from './stock.ts';
 import { normalizeTagId } from './tags.ts';
 
 export interface LocationTypeSummary {
@@ -77,7 +78,7 @@ export type MoveResult =
   | { ok: true; moved: boolean; clip: ClipSummary; check: PlacementCheck }
   | { ok: false; refusal: MoveRefusal; check?: PlacementCheck };
 
-export interface ScopedData {
+export interface ScopedData extends StockOps {
   /** The clip or location a tag stands for; null for a malformed, unknown or other tenant's tag. */
   tagView(tagId: string): Promise<TagView | null>;
   /** Clips stored at one place (at most 200), or null when the place does not exist. */
@@ -178,7 +179,17 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     const row = rows[0];
     return row ? toClip(row) : null;
   };
+  const stock = createStockOps({
+    sql,
+    tenantId,
+    requireRead: () => {
+      require(Scope.LocationsRead);
+    },
+    requireWrite,
+    findNode: async (id) => [...flatten(await loadTree())].find((n) => n.id === id),
+  });
   return {
+    ...stock,
     async tagView(tagId) {
       require(Scope.LocationsRead);
       const target = await resolve(tagId);
