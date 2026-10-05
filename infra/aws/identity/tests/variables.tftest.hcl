@@ -207,3 +207,11 @@ run "pool_is_password_plus_totp" {
     error_message = "no web_authn_configuration while passkeys are not enabled"
   }
 }
+
+run "client_auth_flows_are_compatible_with_rotation" {
+  command = plan
+  assert {
+    condition     = toset(aws_cognito_user_pool_client.web.explicit_auth_flows) == toset(["ALLOW_USER_AUTH"])
+    error_message = "Cognito rejects ALLOW_REFRESH_TOKEN_AUTH when refresh token rotation is enabled; keep only ALLOW_USER_AUTH"
+  }
+}

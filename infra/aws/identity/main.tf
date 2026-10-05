@@ -82,7 +82,8 @@ resource "aws_cognito_user_pool_client" "web" {
     id_token      = "minutes"
     refresh_token = "days"
   }
-  explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_AUTH"]
+  # Cognito rejects ALLOW_REFRESH_TOKEN_AUTH while refresh token rotation is enabled (found in staging apply, SPOOL-190).
+  explicit_auth_flows = ["ALLOW_USER_AUTH"]
 }
 
 # SES identity for account email (DKIM CNAMEs go to the zone stack via output).
