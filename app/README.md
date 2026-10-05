@@ -28,3 +28,11 @@ A tag is a URL (ADR-0001): `<host>/<6-character instance code><12-character tag 
 - `POST /api/v1/clips/{id}/move` with `{"to": "<location id>", "confirm": true|false}`: moves one clip to a place that holds units and records a `move` event, atomically. Past a hard limit it answers 409 `needs_confirmation` until `confirm` is true; a soft limit and an unset capacity go through. A place that changed between the check and the write answers 409 `conflict` and stores nothing. Slots are loaded and unloaded by the load workflow (SPOOL-84), so a move into or out of one answers 422. Which places suit a clip's state is also left to those workflows.
 
 Failed sign-ins are rate limited per connecting address (10 a minute); after that even the right token is refused until the window ends. Behind a reverse proxy every caller shares the proxy's address, so run it only on a trusted network until a trusted-proxy setting exists.
+
+### The tag page and moving a clip by tapping (development preview)
+
+Opening a tag link shows what the tag stands for. First visit: paste the development token once; it is traded for a session cookie and forgotten by the page. A clip tag shows the filament, its state and where it is now, with **Move this clip** (held for ten minutes). A place tag shows used and free, lists the clips there, and offers **Move <held clip> here** when one is held. Every move ends on an on-screen **Move here** tap; past a hard limit the page warns and asks again with **Move anyway**. A soft limit goes through.
+
+Without NFC the same move is on the main page (**Move a clip**): pick the place the clip is in, tap the clip, pick the destination. Unknown, malformed and other-instance tags all show the same neutral message.
+
+For a phone demo: `pnpm demo:fill`, start the server with `SPOOLSPOT_INSTANCE_CODE=<6 characters>`, then `pnpm demo:links http://<your-ip>:8787` prints links for three tagged places and two clips. `pnpm demo:remove` clears the demo items and their tags.

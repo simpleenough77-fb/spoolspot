@@ -17,6 +17,7 @@ import { createDevTokenProvider } from '../app/src/auth/dev-token.ts';
 import { createScopedData } from '../app/src/data/scoped.ts';
 import { runMigrations } from '../app/src/db/migrate.ts';
 import { openDatabase, sqlFromDatabase } from '../app/src/db/sqlite.ts';
+import { createMemorySessionStore } from '../app/src/auth/session.ts';
 import { createApp } from '../app/src/http/app.ts';
 import { importSeed } from '../app/src/seed/import.ts';
 import type { SeedDocument } from '../app/src/seed/validate.ts';
@@ -32,8 +33,10 @@ function htmlFiles(dir: string): string[] {
   });
 }
 
+const PLACE_TAG = 'SKQT00000001';
 const TENANT = '3b1c0d1e-5a1e-4c63-9a0e-5b2a6f0c7d11';
 // A throwaway token for this scan only: it protects an in-memory database that lives for seconds.
+const CODE = 'A11Y01';
 const SCAN_TOKEN = 'a11y-scan-token-0123456789-abcdefghijklmnop';
 
 /** The real app on an in-memory database with the seed and a few items, so states beyond "empty" render. */
@@ -66,12 +69,28 @@ async function scanApp() {
   db.prepare(
     "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-0000000000aa', ?, 'closet-storage.shelf-1', 'spool', 5)",
   ).run(TENANT, filament);
+  // Tags for the tap page: clips S...1 and S...2 are on loc1.shelf-1 (moved during the scan); two places
+  // are tagged; loc1.shelf-2 holds one clip with a capacity of 1, so a move there needs the hard-limit confirm.
+  db.prepare('UPDATE location SET tag_id = ? WHERE tenant_id = ? AND id = ?').run(
+    PLACE_TAG,
+    TENANT,
+    'loc1.shelf-1',
+  );
+  db.prepare('UPDATE location SET capacity = 1 WHERE tenant_id = ? AND id = ?').run(
+    TENANT,
+    'loc1.shelf-2',
+  );
+  db.prepare(
+    "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, '00000000-0000-4000-8000-0000000000bb', 'S00000000099', ?, 'loc1.shelf-2', 'on_spool')",
+  ).run(TENANT, filament);
   // The real app with the real static handler, so the CSP header and module scripts are exercised.
   return createApp({
     auth: createDevTokenProvider({ token: SCAN_TOKEN, tenantId: TENANT }),
     data: (principal) => createScopedData(sql, principal),
     allowedHosts: ['127.0.0.1'],
     staticHandler: serveStatic({ root: './app/public' }),
+    sessions: createMemorySessionStore(),
+    tagPages: { instanceCode: CODE, shell: readFileSync('app/public/tap.html', 'utf8') },
   });
 }
 
@@ -246,6 +265,81 @@ try {
     await tab.selectOption('#place-location', 'home');
     await tab.locator('#place-result:has-text("in total")').waitFor();
     violations += await axe(tab, `/ (${scheme}, Home as the place)`);
+    // The non-NFC way to move a clip: pick the place, tap a clip, see the mover panel.
+    await tab.selectOption('#move-from', 'loc1.shelf-1');
+    await tab.locator('#move-clips li button').first().waitFor();
+    violations += await axe(tab, `/ (${scheme}, move section, clips listed)`);
+    await tab.locator('#move-clips li button').first().click();
+    await tab.locator('#mover-go').waitFor();
+    violations += await axe(tab, `/ (${scheme}, move section, mover open)`);
+    violations += await reflow(tab, `/ (${scheme}, 320px wide, text at 200%, mover open)`);
+    await context.close();
+  }
+
+  // The tag page: sign in, a clip card, holding it, the hard-limit warning, a move, a place card, and the
+  // neutral pages. Each scheme uses its own clip so the two runs do not depend on each other.
+  const tapBase = `http://127.0.0.1:${String(port)}`;
+  for (const [scheme, clipTag] of [
+    ['light', 'S00000000001'],
+    ['dark', 'S00000000002'],
+  ] as const) {
+    const context = await browser.newContext({
+      colorScheme: scheme,
+      viewport: { width: 375, height: 700 },
+    });
+    const tab = await context.newPage();
+    await tab.goto(`${tapBase}/${CODE}${clipTag}`);
+    await tab.locator('#signin:not([hidden])').waitFor();
+    violations += await axe(tab, `tap (${scheme}, sign in)`);
+    violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, sign in)`);
+    await tab.fill('#token', SCAN_TOKEN);
+    await tab.click('#signin button[type=submit]');
+    await tab.locator('#tag-card:not([hidden])').waitFor();
+    violations += expectText(
+      await tab.locator('#tag-heading').innerText(),
+      'Clip: Scan PLA Black',
+      'a clip tag shows its filament',
+    );
+    violations += await axe(tab, `tap (${scheme}, clip card)`);
+    await tab.click('#pick-up');
+    await tab.locator('#mover-go').waitFor();
+    violations += await axe(tab, `tap (${scheme}, mover open)`);
+    violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, mover open)`);
+    // A full hard place: the page warns and asks again before it moves anything.
+    await tab.selectOption('#mover-place', 'loc1.shelf-2');
+    await tab.click('#mover-go');
+    await tab.locator('#mover-anyway:not([hidden])').waitFor();
+    violations += expectText(
+      await tab.locator('#mover-warning').innerText(),
+      'hard limit',
+      'a hard limit warns before moving',
+    );
+    violations += await axe(tab, `tap (${scheme}, hard-limit warning)`);
+    await tab.selectOption('#mover-place', 'closet-storage.shelf-1');
+    await tab.click('#mover-go');
+    await tab.locator('#tap-status:has-text("Moved.")').waitFor();
+    violations += await axe(tab, `tap (${scheme}, moved)`);
+    await tab.goto(`${tapBase}/${CODE}${PLACE_TAG}`);
+    await tab.locator('#clip-list-section:not([hidden])').waitFor();
+    violations += expectText(
+      await tab.locator('#tag-detail').innerText(),
+      'free of',
+      'a place tag shows used and free',
+    );
+    violations += await axe(tab, `tap (${scheme}, place card)`);
+    violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, place card)`);
+    // Unknown tag of this instance and a wrong instance code: the same neutral message.
+    await tab.goto(`${tapBase}/${CODE}SKQT0000ZZZZ`);
+    await tab.locator('#tap-status:has-text("not recognised")').waitFor();
+    violations += await axe(tab, `tap (${scheme}, unknown tag)`);
+    const wrong = await tab.goto(`${tapBase}/ZZZZZZSKQT0000ZZZZ`);
+    violations += wrong?.status() === 404 ? 0 : 1;
+    violations += expectText(
+      await tab.locator('body').innerText(),
+      'not recognised',
+      'a wrong code shows the neutral page',
+    );
+    violations += await axe(tab, `tap (${scheme}, wrong instance code)`);
     await context.close();
   }
 } finally {
@@ -255,5 +349,5 @@ try {
 
 if (violations > 0) process.exit(1);
 console.log(
-  `${String(pages.length)} page(s) and the loaded tree and placement states (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
+  `${String(pages.length)} page(s), the loaded tree and placement states, the move section and the tag page states (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
 );

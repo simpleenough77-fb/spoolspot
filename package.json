@@ -28,7 +28,8 @@
     "db:migrate": "node scripts/migrate.ts",
     "seed:import": "node scripts/import-seed.ts",
     "demo:fill": "node scripts/demo-data.ts fill",
-    "demo:remove": "node scripts/demo-data.ts remove"
+    "demo:remove": "node scripts/demo-data.ts remove",
+    "demo:links": "node scripts/demo-links.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.3",
