@@ -67,8 +67,8 @@ function addFilament(
   return id;
 }
 
-describe('migration 0001', () => {
-  it('creates exactly the six tables', () => {
+describe('migrations 0001 and 0002', () => {
+  it('creates exactly the seven tables', () => {
     const { db } = memoryDatabase();
     expect(tables(db)).toEqual([
       'clip',
@@ -76,6 +76,7 @@ describe('migration 0001', () => {
       'filament',
       'location',
       'stock_line',
+      'tag',
       'tenant_settings',
     ]);
   });
