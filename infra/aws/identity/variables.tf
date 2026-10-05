@@ -43,6 +43,6 @@ variable "app_hostname" {
       endswith(var.app_hostname, ".${var.zone_name}") &&
       can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.app_hostname))
     )
-    error_message = "app_hostname must be a plain lowercase hostname inside zone_name (end with .<zone_name>; no slashes, ports or other characters). It becomes the OAuth callback host and the passkey relying-party ID."
+    error_message = "app_hostname must be a plain lowercase hostname inside zone_name (end with .<zone_name>; no slashes, ports or other characters). It becomes the OAuth callback host."
   }
 }

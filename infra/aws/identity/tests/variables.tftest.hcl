@@ -191,3 +191,19 @@ run "plan_role_is_rejected_for_prod" {
   }
   expect_failures = [var.plan_trusted_role_arn]
 }
+
+run "pool_is_password_plus_totp" {
+  command = plan
+  assert {
+    condition     = aws_cognito_user_pool.this.mfa_configuration == "ON"
+    error_message = "MFA must be ON for the pool"
+  }
+  assert {
+    condition     = toset(aws_cognito_user_pool.this.sign_in_policy[0].allowed_first_auth_factors) == toset(["PASSWORD"])
+    error_message = "first factor must be PASSWORD only (passkeys wait for provider factor_configuration support, SPOOL-190)"
+  }
+  assert {
+    condition     = length(aws_cognito_user_pool.this.web_authn_configuration) == 0
+    error_message = "no web_authn_configuration while passkeys are not enabled"
+  }
+}

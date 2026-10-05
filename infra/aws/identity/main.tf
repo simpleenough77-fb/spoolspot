@@ -26,13 +26,12 @@ resource "aws_cognito_user_pool" "this" {
     temporary_password_validity_days = 3
   }
 
-  # [U] Verify in staging: passkeys together with MFA ON (finding F8).
+  # SPOOL-190: first factor is PASSWORD only, with TOTP as the required second
+  # factor (mfa_configuration ON). Passkeys (WEB_AUTHN) are not enabled: with MFA
+  # ON Cognito requires factor_configuration MULTI_FACTOR_WITH_USER_VERIFICATION,
+  # which the pinned aws provider cannot set. Revisit when it can.
   sign_in_policy {
-    allowed_first_auth_factors = ["PASSWORD", "WEB_AUTHN"]
-  }
-  web_authn_configuration {
-    relying_party_id  = var.app_hostname
-    user_verification = "required"
+    allowed_first_auth_factors = ["PASSWORD"]
   }
 
   account_recovery_setting {
