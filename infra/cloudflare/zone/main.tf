@@ -113,9 +113,10 @@ resource "cloudflare_dns_record" "t_pi" {
   name    = var.resolver_host
   type    = "A"
   content = var.pi_private_ip
-  ttl     = 300
+  # Matches the LIVE record (SPOOL-170 first plan, 2026-10-05): TTL Auto (1) and no comment. Changing either is a separate,
+  # reviewed update after the zero-diff import. The TTL is lowered before the account move (DNS plan, step 4).
+  ttl     = 1
   proxied = false
-  comment = "ADR-0001 phase 1; repointed to the Worker in phase 2 (gate G8)"
   # Every NFC tag resolves through this record. Removing the protection needs a separate, labelled PR.
   lifecycle { prevent_destroy = true }
 }

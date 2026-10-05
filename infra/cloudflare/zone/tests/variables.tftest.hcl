@@ -14,6 +14,19 @@ run "baseline_is_valid" {
   command = plan
 }
 
+# SPOOL-170: the resolver record is imported, so its attributes must equal the live record (TTL Auto, no comment).
+run "resolver_record_matches_live" {
+  command = plan
+  assert {
+    condition     = cloudflare_dns_record.t_pi[0].ttl == 1 && cloudflare_dns_record.t_pi[0].proxied == false
+    error_message = "t_pi must match the live record: ttl 1 (Auto), not proxied."
+  }
+  assert {
+    condition     = cloudflare_dns_record.t_pi[0].comment == null
+    error_message = "t_pi must not carry a comment while it is being imported from a record that has none."
+  }
+}
+
 run "zone_id_must_be_32_hex" {
   command = plan
   variables { zone_id = "not-a-zone-id" }
