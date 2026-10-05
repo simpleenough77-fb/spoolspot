@@ -637,7 +637,7 @@ describe('POST /api/v1/clips/:id/move', () => {
     const realBatch = s.sql.batch.bind(s.sql);
     s.sql.batch = async (statements) => {
       s.fill('loc1.shelf-2', 1);
-      await realBatch(statements);
+      return realBatch(statements);
     };
     const result = await data.moveClip(s.clipId, 'loc1.shelf-2', false);
     expect(result).toEqual({ ok: false, refusal: 'conflict' });
@@ -649,7 +649,7 @@ describe('POST /api/v1/clips/:id/move', () => {
       s.db
         .prepare("UPDATE clip SET location_id = 'closet-storage.shelf-1' WHERE id = ?")
         .run(s.clipId);
-      await realBatch(statements);
+      return realBatch(statements);
     };
     const stale = await data.moveClip(s.clipId, 'loc1.shelf-2', true);
     expect(stale).toEqual({ ok: false, refusal: 'conflict' });

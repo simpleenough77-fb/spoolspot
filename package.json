@@ -18,7 +18,7 @@
     "test": "vitest run",
     "hooks:install": "sh scripts/install-hooks.sh",
     "check:spdx": "node scripts/check-spdx.ts",
-    "seed:validate": "node scripts/validate-seed.ts",
+    "seed:validate": "node scripts/validate-seed.ts && node scripts/validate-catalog.ts",
     "check:actions-pinned": "node scripts/check-actions-pinned.ts",
     "check:licenses": "node scripts/check-licenses.ts",
     "a11y": "node scripts/a11y-check.ts",
@@ -29,7 +29,8 @@
     "seed:import": "node scripts/import-seed.ts",
     "demo:fill": "node scripts/demo-data.ts fill",
     "demo:remove": "node scripts/demo-data.ts remove",
-    "demo:links": "node scripts/demo-links.ts"
+    "demo:links": "node scripts/demo-links.ts",
+    "catalog:import": "node scripts/catalog-import.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.3",

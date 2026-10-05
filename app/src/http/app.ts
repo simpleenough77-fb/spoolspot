@@ -2,7 +2,7 @@
 // The HTTP application. Web Standard APIs only (ADR-0003): the same app runs under the Node adapter
 // (server.ts) and, later, a Worker. Order of defence: host check, security headers, authentication,
 // scope, tenant-scoped data. Unauthenticated callers learn nothing beyond "401".
-import { Hono, type MiddlewareHandler } from 'hono';
+import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import {
   ForbiddenError,
   hasScope,
@@ -160,16 +160,41 @@ function single(values: string[] | undefined): string | undefined {
   return values?.length === 1 ? values[0] : undefined;
 }
 
-/** `{ to, confirm? }` as strict JSON of a small size, or null. Anything else, including extra keys, is refused. */
-async function readMoveBody(c: {
-  req: { header: (name: string) => string | undefined; text: () => Promise<string> };
-}): Promise<{ to: string; confirm: boolean } | null> {
+/** Reads at most MAX_BODY_BYTES of the body, stopping early; null when it is larger (even if chunked). */
+async function readLimitedText(raw: Request): Promise<string | null> {
+  const reader = raw.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    all.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return new TextDecoder().decode(all);
+}
+
+/** A small strict JSON object body, or null (wrong content type, too large, not an object). */
+async function readJsonObject(c: {
+  req: { header: (name: string) => string | undefined; raw: Request };
+}): Promise<Record<string, unknown> | null> {
   if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/json'))
     return null;
   const declared = Number(c.req.header('content-length') ?? '0');
   if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) return null;
-  const text = await c.req.text();
-  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) return null;
+  const text = await readLimitedText(c.req.raw);
+  if (text === null) return null;
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -177,11 +202,21 @@ async function readMoveBody(c: {
     return null;
   }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const extra = Object.keys(record).filter((k) => k !== 'to' && k !== 'confirm');
+  return value as Record<string, unknown>;
+}
+
+const onlyKeys = (record: Record<string, unknown>, keys: readonly string[]): boolean =>
+  Object.keys(record).every((k) => keys.includes(k));
+
+/** `{ to, confirm? }` as strict JSON of a small size, or null. Anything else, including extra keys, is refused. */
+async function readMoveBody(c: Parameters<typeof readJsonObject>[0]): Promise<{
+  to: string;
+  confirm: boolean;
+} | null> {
+  const record = await readJsonObject(c);
+  if (record === null || !onlyKeys(record, ['to', 'confirm'])) return null;
   const { to, confirm } = record;
   if (
-    extra.length > 0 ||
     typeof to !== 'string' ||
     to.length > 64 ||
     !LOCATION_ID.test(to) ||
@@ -190,6 +225,39 @@ async function readMoveBody(c: {
     return null;
   }
   return { to, confirm: confirm === true };
+}
+
+interface StockBody {
+  filament_id: string;
+  location_id: string;
+  pack: 'spool' | 'refill';
+  delta: 1 | -1;
+  confirm: boolean;
+}
+
+/** `{ filament_id, location_id, pack, delta: 1 | -1, confirm? }`, strictly, or null. */
+async function readStockBody(c: Parameters<typeof readJsonObject>[0]): Promise<StockBody | null> {
+  const record = await readJsonObject(c);
+  if (
+    record === null ||
+    !onlyKeys(record, ['filament_id', 'location_id', 'pack', 'delta', 'confirm'])
+  ) {
+    return null;
+  }
+  const { filament_id, location_id, pack, delta, confirm } = record;
+  if (
+    typeof filament_id !== 'string' ||
+    !CLIP_ID.test(filament_id) ||
+    typeof location_id !== 'string' ||
+    location_id.length > 64 ||
+    !LOCATION_ID.test(location_id) ||
+    (pack !== 'spool' && pack !== 'refill') ||
+    (delta !== 1 && delta !== -1) ||
+    (confirm !== undefined && typeof confirm !== 'boolean')
+  ) {
+    return null;
+  }
+  return { filament_id, location_id, pack, delta, confirm: confirm === true };
 }
 
 export function createApp(options: AppOptions): Hono<AppEnv> {
@@ -333,6 +401,55 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     if (result.ok) return c.json({ moved: result.moved, clip: result.clip, check: result.check });
     switch (result.refusal) {
       case 'clip_not_found':
+        return c.json({ error: 'not_found' }, 404);
+      case 'location_not_found':
+        return c.json({ error: 'location_not_found' }, 404);
+      case 'needs_confirmation':
+        return c.json({ error: 'needs_confirmation', check: result.check }, 409);
+      case 'conflict':
+        return c.json({ error: 'conflict' }, 409);
+      default:
+        return c.json({ error: result.refusal }, 422);
+    }
+  });
+
+  const needRead = (c: Context<AppEnv>): boolean =>
+    hasScope(c.get('principal'), Scope.LocationsRead);
+
+  app.get('/api/v1/filaments', async (c) => {
+    if (!needRead(c)) return c.json({ error: 'forbidden' }, 403);
+    return c.json({ filaments: await c.get('data').filaments() });
+  });
+
+  app.get('/api/v1/filaments/:id/stock', async (c) => {
+    if (!needRead(c)) return c.json({ error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    if (!CLIP_ID.test(id)) return c.json({ error: 'invalid_request' }, 400);
+    const lines = await c.get('data').stockOf(id);
+    return lines ? c.json({ lines }) : c.json({ error: 'not_found' }, 404);
+  });
+
+  app.get('/api/v1/locations/:id/stock', async (c) => {
+    if (!needRead(c)) return c.json({ error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    if (id.length > 64 || !LOCATION_ID.test(id)) return c.json({ error: 'invalid_request' }, 400);
+    const lines = await c.get('data').stockAt(id);
+    return lines ? c.json({ lines }) : c.json({ error: 'not_found' }, 404);
+  });
+
+  // One tap on a stock line: +1 or -1. The line is created by the first +1.
+  app.post('/api/v1/stock/adjust', async (c) => {
+    if (!hasScope(c.get('principal'), Scope.InventoryWrite)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const body = await readStockBody(c);
+    if (body === null) return c.json({ error: 'invalid_request' }, 400);
+    const result = await c
+      .get('data')
+      .adjustStock(body.filament_id, body.location_id, body.pack, body.delta, body.confirm);
+    if (result.ok) return c.json({ line: result.line, check: result.check });
+    switch (result.refusal) {
+      case 'filament_not_found':
         return c.json({ error: 'not_found' }, 404);
       case 'location_not_found':
         return c.json({ error: 'location_not_found' }, 404);

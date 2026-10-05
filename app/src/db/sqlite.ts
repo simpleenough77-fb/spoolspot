@@ -50,14 +50,16 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
     all<T extends object>(query: string, params?: readonly SqlParam[]): Promise<T[]> {
       return attempt(() => db.prepare(query).all(...bind(params)) as T[]);
     },
-    batch(statements: readonly Statement[]): Promise<void> {
+    batch(statements: readonly Statement[]): Promise<number[]> {
       return attempt(() => {
         db.exec('BEGIN IMMEDIATE');
         try {
+          const changes: number[] = [];
           for (const s of statements) {
-            db.prepare(s.query).run(...bind(s.params));
+            changes.push(Number(db.prepare(s.query).run(...bind(s.params)).changes));
           }
           db.exec('COMMIT');
+          return changes;
         } catch (error) {
           try {
             db.exec('ROLLBACK');

@@ -36,3 +36,16 @@ Opening a tag link shows what the tag stands for. First visit: paste the develop
 Without NFC the same move is on the main page (**Move a clip**): pick the place the clip is in, tap the clip, pick the destination. Unknown, malformed and other-instance tags all show the same neutral message.
 
 For a phone demo: `pnpm demo:fill`, start the server with `SPOOLSPOT_INSTANCE_CODE=<6 characters>`, then `pnpm demo:links http://<your-ip>:8787` prints links for three tagged places and two clips. `pnpm demo:remove` clears the demo items and their tags.
+
+## Filament catalog and boxed stock (development preview)
+
+The catalog is the list of filaments you can pick from. `pnpm catalog:import [file]` imports one (default `seed/catalog-sample.json`, a sample format until the Filament Clip Studio contract defines `catalog.json`; nothing in the studio is assumed). It is validated against `schema/catalog.schema.json` first and written in one atomic batch. It only adds: a filament that is already there is never overwritten (your reorder level stays yours), and a new id for a manufacturer, type and color that already exist is refused. Importing twice changes nothing.
+
+Boxed stock is a count per filament, place and pack (`spool` or `refill`). Counts change one tap at a time.
+
+- `GET /api/v1/filaments`: the catalog, for choosing by tapping.
+- `GET /api/v1/locations/{id}/stock`: every stock line at a place (zero counts included).
+- `GET /api/v1/filaments/{id}/stock`: where a filament is held (counts above zero).
+- `POST /api/v1/stock/adjust` with `{"filament_id", "location_id", "pack": "spool"|"refill", "delta": 1|-1, "confirm"?}`: +1 creates the line on the first tap. Refused with 422: below zero, a refill pack for a disposable filament, a container, a loaded slot, over 10000. Past a hard limit it answers 409 `needs_confirmation` until `confirm` is true; a soft limit goes through with a notice. A write that another request got to first answers 409 `conflict` and stores nothing. Unknown ids and another tenant's ids answer 404.
+
+Stock counts do not write events yet: intake and the other workflows that log events arrive with SPOOL-84.
