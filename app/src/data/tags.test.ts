@@ -34,6 +34,13 @@ describe('normalizeTagId', () => {
       '0123456789AO',
       ' 0123456789AB',
       '0123456789Aé',
+      // Letters that fold into the alphabet when upper-cased must not count as that letter.
+      '0123456789A\u017f',
+      'ABCDEFGHJKM\u00df',
+      '0123456789\ufb06',
+      '0123456789A\u212a',
+      '\uff10123456789A',
+      'ı23456789ABC',
     ]) {
       expect(normalizeTagId(bad), bad).toBeNull();
     }
@@ -79,6 +86,23 @@ describe('withFreshTag', () => {
       true,
     );
     expect(isTagConflict('UNIQUE')).toBe(false);
+    // A clash on a record's own ID, or on the one-tag-per-record rule, is not a tag clash.
+    for (const other of [
+      'UNIQUE constraint failed: clip.tenant_id, clip.id',
+      'UNIQUE constraint failed: location.tenant_id, location.id',
+      'UNIQUE constraint failed: tag.tenant_id, tag.kind, tag.target_id',
+      'FOREIGN KEY constraint failed',
+    ]) {
+      expect(isTagConflict(new Error(other)), other).toBe(false);
+    }
+    // D1 puts its own prefix and suffix around the SQLite text.
+    expect(
+      isTagConflict(
+        new Error(
+          'D1_ERROR: UNIQUE constraint failed: tag.tenant_id, tag.tag_id: SQLITE_CONSTRAINT',
+        ),
+      ),
+    ).toBe(true);
   });
 
   it('recovers from a real collision in the database', async () => {

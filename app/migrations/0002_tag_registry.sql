@@ -4,6 +4,17 @@
 -- clip can never carry the same ID. The registry is kept in step by triggers, so the existing columns
 -- and every writer keep working, and the resolver reads one table. Tag IDs are random and carry no
 -- personal data; they are unique per tenant, not globally.
+--
+-- Rules for writers: the registry follows INSERT, UPDATE and DELETE. Do not use INSERT OR REPLACE or
+-- REPLACE INTO on location or clip: SQLite does not run the delete triggers for the row it replaces,
+-- so the old registry row would be left behind (a test scans the source for it).
+--
+-- If this migration stops with "UNIQUE constraint failed: tag.tenant_id, tag.tag_id", the same tag ID
+-- is on a location and a clip (or two tenants' rows were merged by hand). Find them with:
+--   SELECT l.tenant_id, l.tag_id FROM location l JOIN clip c
+--     ON c.tenant_id = l.tenant_id AND c.tag_id = l.tag_id;
+-- then give one of the two records a new tag and run the migration again. The runner applies the file
+-- in one transaction, so a failed run changes nothing.
 CREATE TABLE tag (
   tenant_id TEXT NOT NULL REFERENCES tenant_settings (tenant_id),
   tag_id TEXT NOT NULL CHECK (
@@ -35,6 +46,7 @@ END;
 
 CREATE TRIGGER location_tag_update
 AFTER UPDATE OF tenant_id, id, tag_id ON location
+WHEN OLD.tenant_id IS NOT NEW.tenant_id OR OLD.id IS NOT NEW.id OR OLD.tag_id IS NOT NEW.tag_id
 BEGIN
   DELETE FROM tag
    WHERE tenant_id = OLD.tenant_id AND kind = 'location' AND target_id = OLD.id;
@@ -58,6 +70,7 @@ END;
 
 CREATE TRIGGER clip_tag_update
 AFTER UPDATE OF tenant_id, id, tag_id ON clip
+WHEN OLD.tenant_id IS NOT NEW.tenant_id OR OLD.id IS NOT NEW.id OR OLD.tag_id IS NOT NEW.tag_id
 BEGIN
   DELETE FROM tag
    WHERE tenant_id = OLD.tenant_id AND kind = 'clip' AND target_id = OLD.id;
