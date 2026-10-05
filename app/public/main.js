@@ -3,6 +3,7 @@
 import { ApiError, setToken } from './api.js';
 import { setupMove } from './movepage.js';
 import { setupPlacement } from './placement.js';
+import { setupStock } from './stock.js';
 import { showSummary } from './summary.js';
 import { showTree } from './tree.js';
 
@@ -34,6 +35,8 @@ function clearResults() {
   if (placement) placement.hidden = true;
   const move = document.getElementById('move-section');
   if (move) move.hidden = true;
+  const stock = document.getElementById('stock-section');
+  if (stock) stock.hidden = true;
 }
 
 // After a move, refresh the tree and the placement answer but keep the move section as it is.
@@ -55,6 +58,7 @@ async function load() {
     await showSummary();
     await setupPlacement(nodes, fail);
     await setupMove(nodes, fail, reloadTree);
+    await setupStock(nodes, fail, reloadTree);
     status.textContent = 'Loaded the location tree.';
   } catch (error) {
     fail(error);

@@ -69,6 +69,10 @@ async function scanApp() {
   db.prepare(
     "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-0000000000aa', ?, 'closet-storage.shelf-1', 'spool', 5)",
   ).run(TENANT, filament);
+  // A refillable filament too, so a refill pack can be chosen and a disposable one refuses it.
+  db.prepare(
+    "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, '00000000-0000-4000-8000-000000000002', 'Scan', 'PETG', 'Blue', 'refillable')",
+  ).run(TENANT);
   // Tags for the tap page: clips S...1 and S...2 are on loc1.shelf-1 (moved during the scan); two places
   // are tagged; loc1.shelf-2 holds one clip with a capacity of 1, so a move there needs the hard-limit confirm.
   db.prepare('UPDATE location SET tag_id = ? WHERE tenant_id = ? AND id = ?').run(
@@ -273,6 +277,60 @@ try {
     await tab.locator('#mover-go').waitFor();
     violations += await axe(tab, `/ (${scheme}, move section, mover open)`);
     violations += await reflow(tab, `/ (${scheme}, 320px wide, text at 200%, mover open)`);
+    // Boxed stock: a place with a count, +/- taps, adding by choosing, the hard-limit warning, where is it.
+    await tab.selectOption('#stock-place', 'closet-storage.shelf-1');
+    await tab.locator('#stock-lines li output').first().waitFor();
+    violations += expectText(
+      await tab.locator('#stock-lines').innerText(),
+      'Scan PLA Black',
+      'the stock list names the filament',
+    );
+    violations += await axe(tab, `/ (${scheme}, boxed stock listed)`);
+    violations += await reflow(tab, `/ (${scheme}, 320px wide, text at 200%, boxed stock)`);
+    await tab
+      .locator('#stock-lines li', { hasText: 'Scan PLA Black' })
+      .getByRole('button', { name: /Plus: one more/ })
+      .click();
+    await tab.locator('#stock-status:has-text("now 6")').waitFor();
+    await tab
+      .locator('#stock-lines li', { hasText: 'Scan PLA Black' })
+      .getByRole('button', { name: /Minus: one fewer/ })
+      .click();
+    await tab.locator('#stock-status:has-text("now 5")').waitFor();
+    violations += await axe(tab, `/ (${scheme}, boxed stock after taps)`);
+    await tab.selectOption('#add-mfr', 'Scan');
+    await tab.selectOption('#add-type', 'PETG');
+    await tab.selectOption('#add-color', { label: 'Blue' });
+    violations += expectText(
+      await tab.locator('#add-pack').innerText(),
+      'Refill pack',
+      'a refillable filament offers a refill pack',
+    );
+    violations += (await tab.locator('#add-pack option[value=refill]').isDisabled()) ? 1 : 0;
+    await tab.selectOption('#add-pack', 'refill');
+    await tab.click('#add-go');
+    await tab.locator('#stock-status:has-text("Added")').waitFor();
+    violations += await axe(tab, `/ (${scheme}, filament added)`);
+    await tab
+      .locator('#stock-lines li', { hasText: 'Refill' })
+      .getByRole('button', { name: /Minus: one fewer/ })
+      .click();
+    await tab.locator('#stock-status:has-text("now 0")').waitFor();
+    await tab.selectOption('#add-type', 'PLA');
+    await tab.selectOption('#add-color', { label: 'Black' });
+    violations += (await tab.locator('#add-pack option[value=refill]').isDisabled()) ? 0 : 1;
+    await tab.selectOption('#stock-place', 'loc1.shelf-2');
+    await tab.click('#add-go');
+    await tab.locator('#stock-anyway:not([hidden])').waitFor();
+    violations += expectText(
+      await tab.locator('#stock-warning').innerText(),
+      'hard limit',
+      'a full hard place warns before adding stock',
+    );
+    violations += await axe(tab, `/ (${scheme}, boxed stock hard-limit warning)`);
+    await tab.selectOption('#where-filament', { label: 'Scan PLA Black' });
+    await tab.locator('#where-lines li').first().waitFor();
+    violations += await axe(tab, `/ (${scheme}, where is it)`);
     await context.close();
   }
 
@@ -349,5 +407,5 @@ try {
 
 if (violations > 0) process.exit(1);
 console.log(
-  `${String(pages.length)} page(s), the loaded tree and placement states, the move section and the tag page states (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
+  `${String(pages.length)} page(s), the loaded tree and placement states, the move section, boxed stock and the tag page states (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
 );
