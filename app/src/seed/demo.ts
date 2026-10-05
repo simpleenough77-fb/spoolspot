@@ -8,6 +8,12 @@ import type { DatabaseSync } from 'node:sqlite';
 /** Marks every demo row: the filament's manufacturer, and the "DEM0" start of each clip tag. */
 export const DEMO_MANUFACTURER = 'SpoolSpot demo';
 const TAG_PREFIX = 'DEM0';
+/** Fixed place tags for phone demos: "DEM1" and eight digits (valid tag IDs; clips use "DEM0"). */
+export const DEMO_PLACE_TAGS: readonly (readonly [string, string])[] = [
+  ['loc1.shelf-1', 'DEM100000001'],
+  ['loc1.shelf-2', 'DEM100000002'],
+  ['closet-storage.shelf-1', 'DEM100000003'],
+];
 /** Closet shelf 1 gets a small soft capacity so the "over a soft limit" notice can be shown. */
 const SOFT_DEMO_LOCATION = 'closet-storage.shelf-1';
 const SOFT_DEMO_CAPACITY = 4;
@@ -74,6 +80,12 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
         ).run(tenantId, randomUUID(), clipTag(n), filament, location);
       }
     }
+    // Tag only places that exist and have no tag yet, so a real tag is never replaced.
+    for (const [location, tag] of DEMO_PLACE_TAGS) {
+      db.prepare(
+        'UPDATE location SET tag_id = ? WHERE tenant_id = ? AND id = ? AND tag_id IS NULL',
+      ).run(tag, tenantId, location);
+    }
     let spools = 0;
     if (stockHere) {
       if (capacityWasUnset) {
@@ -115,6 +127,12 @@ export function removeDemo(db: DatabaseSync, tenantId: string): number {
       tenantId,
       filament,
     );
+    for (const [, tag] of DEMO_PLACE_TAGS) {
+      db.prepare('UPDATE location SET tag_id = NULL WHERE tenant_id = ? AND tag_id = ?').run(
+        tenantId,
+        tag,
+      );
+    }
     db.prepare('DELETE FROM filament WHERE tenant_id = ? AND id = ?').run(tenantId, filament);
     if (setCapacity) {
       db.prepare(

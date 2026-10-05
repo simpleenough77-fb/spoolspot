@@ -42,6 +42,36 @@ describe('demo data', () => {
     expect(suggested).not.toContain('closet-storage.shelf-1');
   });
 
+  it('tags three places for phone demos, resolvable per tenant, and remove clears them', async () => {
+    const { db, sql } = await setup();
+    fillDemo(db, TENANT_A);
+    const data = createScopedData(sql, {
+      subject: 's',
+      tenantId: TENANT_A,
+      scopes: new Set([Scope.LocationsRead]),
+    });
+    expect(await data.resolveTag('DEM100000001')).toMatchObject({ kind: 'location' });
+    expect(await data.tagView('DEM100000003')).toMatchObject({
+      kind: 'location',
+      location: { id: 'closet-storage.shelf-1' },
+    });
+    removeDemo(db, TENANT_A);
+    expect(await data.resolveTag('DEM100000001')).toBeNull();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM tag').get()).toMatchObject({ n: 0 });
+  });
+
+  it('never replaces a tag a place already has', async () => {
+    const { db } = await setup();
+    db.prepare(
+      "UPDATE location SET tag_id = 'SKQT0000AAAA' WHERE tenant_id = ? AND id = 'loc1.shelf-1'",
+    ).run(TENANT_A);
+    fillDemo(db, TENANT_A);
+    removeDemo(db, TENANT_A);
+    expect(
+      db.prepare("SELECT tag_id FROM location WHERE id = 'loc1.shelf-1'").get(),
+    ).toMatchObject({ tag_id: 'SKQT0000AAAA' });
+  });
+
   it('does nothing the second time', async () => {
     const { db } = await setup();
     fillDemo(db, TENANT_A);
