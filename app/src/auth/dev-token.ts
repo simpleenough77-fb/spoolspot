@@ -40,7 +40,7 @@ export function createDevTokenProvider(options: { token: string; tenantId: strin
   const principal: Principal = {
     subject: 'dev-token',
     tenantId: options.tenantId,
-    scopes: new Set<string>([Scope.LocationsRead]),
+    scopes: new Set<string>([Scope.LocationsRead, Scope.InventoryWrite]),
   };
   return {
     async authenticate(request: Request): Promise<Principal | null> {

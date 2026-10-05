@@ -5,6 +5,8 @@
 
 export const Scope = {
   LocationsRead: 'locations:read',
+  /** Change where things are: moving a clip. */
+  InventoryWrite: 'inventory:write',
 } as const;
 export type ScopeName = (typeof Scope)[keyof typeof Scope];
 
