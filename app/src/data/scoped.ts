@@ -30,15 +30,19 @@ export interface LocationSummary {
 }
 
 /** Why a placement check cannot be answered. Unknown ids and other tenants' ids look the same. */
-export type PlacementRefusal = 'not_found' | 'not_a_leaf';
+export type PlacementRefusal = 'not_found';
 
 export interface ScopedData {
   locationSummary(): Promise<LocationSummary>;
   locationTree(): Promise<LocationNode[]>;
-  /** Read-only: what would happen if `count` units were placed at the leaf. */
+  /** Read-only: what would happen if `count` units were placed at the leaf, or anywhere in the container. */
   placementCheck(locationId: string, count: number): Promise<PlacementCheck | PlacementRefusal>;
-  /** Leaves with room, most free first. Leaves with no capacity set are left out. */
-  placementSuggestions(count: number, type?: LocationType): Promise<PlacementSuggestion[]>;
+  /** Leaves with room, most free first; `within` limits them to one location. Unset capacity is left out. */
+  placementSuggestions(
+    count: number,
+    type?: LocationType,
+    within?: string,
+  ): Promise<PlacementSuggestion[] | PlacementRefusal>;
 }
 
 const TYPE_ORDER: readonly LocationType[] = [
@@ -84,14 +88,15 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     },
     async placementCheck(locationId, count) {
       require(Scope.LocationsRead);
-      const leaf = [...flatten(await loadTree())].find((n) => n.id === locationId);
-      if (!leaf) return 'not_found';
-      if (!leaf.leaf) return 'not_a_leaf';
-      return checkPlacement(leaf, count);
+      const node = [...flatten(await loadTree())].find((n) => n.id === locationId);
+      return node ? checkPlacement(node, count) : 'not_found';
     },
-    async placementSuggestions(count, type) {
+    async placementSuggestions(count, type, within) {
       require(Scope.LocationsRead);
-      return suggestPlacements(await loadTree(), count, type);
+      const tree = await loadTree();
+      if (within === undefined) return suggestPlacements(tree, count, type);
+      const node = [...flatten(tree)].find((n) => n.id === within);
+      return node ? suggestPlacements(tree, count, type, 5, node) : 'not_found';
     },
     async locationSummary(): Promise<LocationSummary> {
       require(Scope.LocationsRead);

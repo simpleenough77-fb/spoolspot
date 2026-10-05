@@ -229,6 +229,23 @@ try {
     // Neither a leaf with no capacity nor one already over its limit is suggested.
     const suggested = await tab.locator('#place-suggestions').innerText();
     violations += suggested.includes('Storage closet') ? 1 : 0;
+    // A whole container: "can I put it in the Storage closet?" counts only the shelves with a capacity.
+    await tab.selectOption('#place-location', 'closet-storage');
+    await tab
+      .locator('#place-result[data-outcome="notice"]:has-text("have no capacity set")')
+      .waitFor();
+    violations += await axe(tab, `/ (${scheme}, container with capacity not set inside)`);
+    violations += expectText(
+      await tab.locator('#place-result').innerText(),
+      'not counted',
+      'a container says which places were left out of the count',
+    );
+    violations += (await tab.locator('#place-suggestions').innerText()).includes('Location 1')
+      ? 1
+      : 0;
+    await tab.selectOption('#place-location', 'home');
+    await tab.locator('#place-result:has-text("in total")').waitFor();
+    violations += await axe(tab, `/ (${scheme}, Home as the place)`);
     await context.close();
   }
 } finally {
