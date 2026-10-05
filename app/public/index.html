@@ -61,6 +61,40 @@
         <div id="move-panel"></div>
       </section>
 
+      <section id="stock-section" aria-labelledby="stock-heading" hidden>
+        <h2 id="stock-heading">Boxed stock</h2>
+        <p>What is boxed at a place. Tap + or − to change a count.</p>
+        <label for="stock-place">Place</label>
+        <select id="stock-place"></select>
+        <ul id="stock-lines" class="plain"></ul>
+        <p id="stock-status" role="status"></p>
+        <p id="stock-warning" role="alert"></p>
+        <button type="button" id="stock-anyway" hidden>Add anyway</button>
+
+        <p id="stock-empty" hidden>
+          No filaments imported yet. Import the catalog first (see the README), then come back.
+        </p>
+        <div id="stock-add">
+          <h3 id="add-heading">Add a filament to this place</h3>
+          <label for="add-mfr">Manufacturer</label>
+          <select id="add-mfr"></select>
+          <label for="add-type">Type</label>
+          <select id="add-type"></select>
+          <label for="add-color">Color</label>
+          <select id="add-color"></select>
+          <label for="add-pack">Pack</label>
+          <select id="add-pack"></select>
+          <button type="button" id="add-go">Add one</button>
+        </div>
+
+        <div id="stock-where">
+          <h3 id="where-heading">Where is it?</h3>
+          <label for="where-filament">Filament</label>
+          <select id="where-filament"></select>
+          <ul id="where-lines" class="plain"></ul>
+        </div>
+      </section>
+
       <table id="summary" hidden>
         <caption>
           Locations by type

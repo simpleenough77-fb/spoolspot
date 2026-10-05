@@ -275,11 +275,61 @@ button[aria-disabled='true'] {
 }
 
 #mover-warning:empty {
-  display: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 #move-note:focus,
 #mover-heading:focus,
 #tag-heading:focus {
   outline: none;
+}
+
+.counter {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  max-width: 100%;
+  gap: 0.5rem;
+}
+
+.counter button {
+  margin-top: 0;
+  min-width: 2.75rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.counter output {
+  min-width: 3ch;
+  text-align: center;
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter button[aria-disabled='true'] {
+  opacity: 1;
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
+}
+
+#stock-warning {
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 6px solid var(--border);
+  font-weight: 600;
+}
+
+#stock-warning:empty {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+#add-go[aria-disabled='true'] {
+  opacity: 1;
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
 }
