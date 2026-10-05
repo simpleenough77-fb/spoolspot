@@ -29,7 +29,10 @@ resource "aws_cognito_user_pool" "this" {
   # SPOOL-190: first factor is PASSWORD only, with TOTP as the required second
   # factor (mfa_configuration ON). Passkeys (WEB_AUTHN) are not enabled: with MFA
   # ON Cognito requires factor_configuration MULTI_FACTOR_WITH_USER_VERIFICATION,
-  # which the pinned aws provider cannot set. Revisit when it can.
+  # which the pinned aws provider cannot set. Revisit when it can (SPOOL-192).
+  # Operational note: provider 6.67.0 sends SetUserPoolMfaConfig before it updates the
+  # sign-in policy, so removing a first factor and turning MFA ON cannot happen in one
+  # apply. Change them in separate applies (staging, SPOOL-190).
   sign_in_policy {
     allowed_first_auth_factors = ["PASSWORD"]
   }
