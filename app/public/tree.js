@@ -55,15 +55,17 @@ function leafItem(node) {
   return li;
 }
 
-function containerItem(node, depth) {
+function containerItem(node, depth, openState) {
   const li = document.createElement('li');
   const details = document.createElement('details');
-  details.open = depth <= OPEN_DEPTH;
+  details.dataset.id = node.id;
+  // Keep what the person had open when the tree is refreshed (after a count or a move changed it).
+  details.open = openState.get(node.id) ?? depth <= OPEN_DEPTH;
   const summary = document.createElement('summary');
   summary.append(text('span', node.name, 'name'), text('span', describe(node), 'figures'));
   const list = document.createElement('ul');
   for (const child of node.children) {
-    list.append(child.leaf ? leafItem(child) : containerItem(child, depth + 1));
+    list.append(child.leaf ? leafItem(child) : containerItem(child, depth + 1, openState));
   }
   details.append(summary, list);
   li.append(details);
@@ -127,10 +129,13 @@ export async function showTree() {
   if (!data || !Array.isArray(data.locations) || !data.locations.every((n) => isNode(n))) {
     throw new Error('unexpected tree data');
   }
+  const openState = new Map(
+    [...root.querySelectorAll('details[data-id]')].map((d) => [d.dataset.id, d.open]),
+  );
   const list = document.createElement('ul');
   list.className = 'tree';
   for (const node of data.locations) {
-    list.append(node.leaf ? leafItem(node) : containerItem(node, 0));
+    list.append(node.leaf ? leafItem(node) : containerItem(node, 0, openState));
   }
   root.replaceChildren(list);
   return data.locations;

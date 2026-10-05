@@ -49,3 +49,9 @@ Boxed stock is a count per filament, place and pack (`spool` or `refill`). Count
 - `POST /api/v1/stock/adjust` with `{"filament_id", "location_id", "pack": "spool"|"refill", "delta": 1|-1, "confirm"?}`: +1 creates the line on the first tap. Refused with 422: below zero, a refill pack for a disposable filament, a container, a loaded slot, over 10000. Past a hard limit it answers 409 `needs_confirmation` until `confirm` is true; a soft limit goes through with a notice. A write that another request got to first answers 409 `conflict` and stores nothing. Unknown ids and another tenant's ids answer 404.
 
 Stock counts do not write events yet: intake and the other workflows that log events arrive with SPOOL-84.
+
+### Boxed stock on the page (development preview)
+
+The main page has a **Boxed stock** section. Pick a place (shelves and drawers; loaded slots are left out) to see what is boxed there; tap **+** or **−** to change a count. To add a filament to the place, choose manufacturer, type and color from the imported catalog and a pack; **Refill pack** is offered only for refillable filaments. Past a hard limit the page warns and asks again with **Add anyway**. **Where is it?** lists the places that hold a chosen filament. Nothing is typed.
+
+For a phone demo use a throwaway database so it can be deleted afterwards: `SPOOLSPOT_DB=data/demo.db pnpm db:migrate && pnpm seed:import && pnpm catalog:import`, then start the server with the same `SPOOLSPOT_DB`. Delete `data/demo.db` when done.
