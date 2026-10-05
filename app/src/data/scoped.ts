@@ -69,7 +69,9 @@ export type MoveRefusal =
   | 'location_not_found'
   | 'not_a_leaf'
   | 'slot_not_supported'
-  | 'needs_confirmation';
+  | 'needs_confirmation'
+  /** The clip or the place changed between the check and the write; nothing was stored. Try again. */
+  | 'conflict';
 
 export type MoveResult =
   | { ok: true; moved: boolean; clip: ClipSummary; check: PlacementCheck }
@@ -233,26 +235,35 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       if (check.outcome === 'warning' && !confirm) {
         return { ok: false, refusal: 'needs_confirmation', check };
       }
-      // One atomic batch: the event records where the clip was at that instant, then the clip moves.
+      // One atomic batch. Both statements carry the same guard, evaluated inside the write: the clip must
+      // still be where we read it, and a hard limit must still have room unless the person confirmed.
+      // If another request got there first the guard fails, nothing is stored, and we report a conflict.
+      const guard = (clipTable: string): string =>
+        `${clipTable}.location_id IS ?
+         AND (? = 1 OR NOT EXISTS (
+           SELECT 1 FROM location d
+            WHERE d.tenant_id = ${clipTable}.tenant_id AND d.id = ?
+              AND d.capacity_mode = 'hard' AND d.capacity IS NOT NULL
+              AND COALESCE((SELECT SUM(s.count) FROM stock_line s
+                             WHERE s.tenant_id = d.tenant_id AND s.location_id = d.id), 0)
+                  + (SELECT COUNT(*) FROM clip k
+                      WHERE k.tenant_id = d.tenant_id AND k.location_id = d.id) >= d.capacity))`;
+      const guardParams = [clip.location_id, confirm ? 1 : 0, destination.id];
       await sql.batch([
         {
           query: `INSERT INTO event (tenant_id, id, type, clip_id, filament_id, from_location_id, to_location_id)
                   SELECT c.tenant_id, ?, 'move', c.id, c.filament_id, c.location_id, ?
-                    FROM clip c WHERE c.tenant_id = ? AND c.id = ?`,
-          params: [crypto.randomUUID(), destination.id, tenantId, clip.id],
+                    FROM clip c WHERE c.tenant_id = ? AND c.id = ? AND ${guard('c')}`,
+          params: [crypto.randomUUID(), destination.id, tenantId, clip.id, ...guardParams],
         },
         {
-          query: 'UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ?',
-          params: [destination.id, tenantId, clip.id],
+          query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${guard('clip')}`,
+          params: [destination.id, tenantId, clip.id, ...guardParams],
         },
       ]);
-      const moved = await clipById(clip.id);
-      return {
-        ok: true,
-        moved: true,
-        clip: moved ?? { ...clip, location_id: destination.id },
-        check,
-      };
+      const after = await clipById(clip.id);
+      if (after?.location_id !== destination.id) return { ok: false, refusal: 'conflict' };
+      return { ok: true, moved: true, clip: after, check };
     },
     async locationTree(): Promise<LocationNode[]> {
       require(Scope.LocationsRead);

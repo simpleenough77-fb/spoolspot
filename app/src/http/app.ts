@@ -31,6 +31,8 @@ export interface AppOptions {
    * sign-in. Anything else on that route gets one neutral page. The route never redirects anywhere.
    */
   tagPages?: { instanceCode: string; shell: string };
+  /** Force Secure, __Host- cookies on or off (behind a TLS-terminating proxy). Default: what the server sees. */
+  secureCookies?: boolean;
   /** Identifies the caller for rate limiting (the connecting address). Default: one shared bucket. */
   clientKey?: (c: { env: unknown; req: { raw: Request } }) => string;
   /** Limits per minute per caller; defaults are 60 tag lookups and 10 failed sign-ins. */
@@ -70,17 +72,21 @@ const CLIP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const MAX_BODY_BYTES = 1024;
 
-function isHttps(c: RequestLike): boolean {
-  return new URL(c.req.url).protocol === 'https:' || c.req.header('x-forwarded-proto') === 'https';
+/**
+ * Whether cookies are Secure. It follows the connection the server itself sees, or the explicit
+ * `secureCookies` option for a TLS-terminating proxy. A forwarded header from the client is not trusted.
+ */
+function isHttps(c: RequestLike, forced: boolean | undefined): boolean {
+  return forced ?? new URL(c.req.url).protocol === 'https:';
 }
 
 /** Over HTTPS the cookie takes the __Host- prefix, which stops a sibling host from planting one. */
-function cookieName(c: RequestLike): string {
-  return isHttps(c) ? `__Host-${SESSION_COOKIE}` : SESSION_COOKIE;
+function cookieName(c: RequestLike, forced: boolean | undefined): string {
+  return isHttps(c, forced) ? `__Host-${SESSION_COOKIE}` : SESSION_COOKIE;
 }
 
-function readSessionId(c: RequestLike): string | null {
-  const wanted = cookieName(c);
+function readSessionId(c: RequestLike, forced: boolean | undefined): string | null {
+  const wanted = cookieName(c, forced);
   for (const part of (c.req.header('cookie') ?? '').split(';')) {
     const eq = part.indexOf('=');
     if (eq < 0) continue;
@@ -92,9 +98,14 @@ function readSessionId(c: RequestLike): string | null {
   return null;
 }
 
-function sessionCookie(c: RequestLike, value: string, maxAgeSeconds: number): string {
-  const secure = isHttps(c) ? '; Secure' : '';
-  return `${cookieName(c)}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${String(maxAgeSeconds)}${secure}`;
+function sessionCookie(
+  c: RequestLike,
+  forced: boolean | undefined,
+  value: string,
+  maxAgeSeconds: number,
+): string {
+  const secure = isHttps(c, forced) ? '; Secure' : '';
+  return `${cookieName(c, forced)}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${String(maxAgeSeconds)}${secure}`;
 }
 
 /** A cookie-signed request that changes something must come from this site itself (CSRF). */
@@ -155,8 +166,10 @@ async function readMoveBody(c: {
 }): Promise<{ to: string; confirm: boolean } | null> {
   if (!(c.req.header('content-type') ?? '').toLowerCase().startsWith('application/json'))
     return null;
+  const declared = Number(c.req.header('content-length') ?? '0');
+  if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) return null;
   const text = await c.req.text();
-  if (text.length > MAX_BODY_BYTES) return null;
+  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) return null;
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -218,7 +231,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     limit: options.rateLimits?.failedAuthPerMinute ?? 10,
     windowMs: 60_000,
   });
+  // The tag page and the lookup API have separate budgets, so a flood of page requests cannot starve a
+  // signed-in person's lookups.
   const resolverLimit = createRateLimiter({
+    limit: options.rateLimits?.resolverPerMinute ?? 60,
+    windowMs: 60_000,
+  });
+  const pageLimit = createRateLimiter({
     limit: options.rateLimits?.resolverPerMinute ?? 60,
     windowMs: 60_000,
   });
@@ -239,7 +258,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     let principal: Principal | null = null;
     let viaCookie = false;
     if (!bearer && options.sessions) {
-      const id = readSessionId(c);
+      const id = readSessionId(c, options.secureCookies);
       if (id !== null) {
         principal = await options.sessions.get(id);
         viaCookie = principal !== null;
@@ -268,16 +287,16 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     if (!sessions) return c.json({ error: 'not_found' }, 404);
     if (c.get('viaCookie')) return c.json({ error: 'unauthorized' }, 401);
     const { id, maxAgeSeconds } = await sessions.create(c.get('principal'));
-    c.header('Set-Cookie', sessionCookie(c, id, maxAgeSeconds));
+    c.header('Set-Cookie', sessionCookie(c, options.secureCookies, id, maxAgeSeconds));
     return c.body(null, 204);
   });
 
   app.delete('/api/v1/session', async (c) => {
     const sessions = options.sessions;
     if (!sessions) return c.json({ error: 'not_found' }, 404);
-    const id = readSessionId(c);
+    const id = readSessionId(c, options.secureCookies);
     if (id !== null) await sessions.destroy(id);
-    c.header('Set-Cookie', sessionCookie(c, '', 0));
+    c.header('Set-Cookie', sessionCookie(c, options.secureCookies, '', 0));
     return c.body(null, 204);
   });
 
@@ -319,6 +338,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         return c.json({ error: 'location_not_found' }, 404);
       case 'needs_confirmation':
         return c.json({ error: 'needs_confirmation', check: result.check }, 409);
+      case 'conflict':
+        return c.json({ error: 'conflict' }, 409);
       default:
         return c.json({ error: result.refusal }, 422);
     }
@@ -393,7 +414,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       });
     app.get('/:tag{[A-Za-z0-9_-]{1,64}}', (c) => {
       const key = clientKey(c);
-      if (!resolverLimit.hit(key)) return tooMany(resolverLimit, key);
+      if (!pageLimit.hit(key)) return tooMany(pageLimit, key);
       const path = c.req.param('tag').toUpperCase();
       const ours = path.length === 18 && path.startsWith(code) && normalizeTagId(path.slice(6));
       if (!ours) return neutral();
