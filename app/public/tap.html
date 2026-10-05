@@ -3,13 +3,47 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SpoolSpot</title>
+    <title>SpoolSpot tag</title>
     <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/tap.js"></script>
   </head>
   <body>
     <main>
       <h1>SpoolSpot</h1>
-      <p>This tag page is coming in the next change.</p>
+      <p id="tap-status" role="status">Loading…</p>
+
+      <form id="signin" hidden>
+        <p>
+          Sign in to see this tag. This build uses plain HTTP and a development token; use it only
+          on your own network.
+        </p>
+        <label for="token">Development token</label>
+        <input
+          id="token"
+          name="token"
+          type="password"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          required
+        />
+        <button type="submit">Sign in</button>
+      </form>
+
+      <section id="tag-card" aria-labelledby="tag-heading" hidden>
+        <h2 id="tag-heading" tabindex="-1"></h2>
+        <p id="tag-detail"></p>
+        <button type="button" id="pick-up" hidden>Move this clip</button>
+        <button type="button" id="move-held-here" hidden></button>
+      </section>
+
+      <section id="clip-list-section" aria-labelledby="clip-list-heading" hidden>
+        <h2 id="clip-list-heading">Clips here</h2>
+        <ul id="clip-list" class="plain"></ul>
+      </section>
+
+      <div id="mover"></div>
+
       <p><a href="/">Open SpoolSpot</a></p>
     </main>
   </body>
