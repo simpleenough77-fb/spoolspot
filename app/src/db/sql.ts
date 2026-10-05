@@ -13,6 +13,10 @@ export interface Statement {
 export interface Sql {
   /** Run one read query with bound parameters. Never build `query` from user input. */
   all<T extends object>(query: string, params?: readonly SqlParam[]): Promise<T[]>;
-  /** Run statements atomically: all take effect or none do. */
-  batch(statements: readonly Statement[]): Promise<void>;
+  /**
+   * Run statements atomically: all take effect or none do. Resolves to the number of rows each
+   * statement changed, in order (D1 reports the same as meta.changes), so a guarded write can tell
+   * whether it actually applied.
+   */
+  batch(statements: readonly Statement[]): Promise<number[]>;
 }
