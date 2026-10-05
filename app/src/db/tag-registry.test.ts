@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -106,6 +106,52 @@ describe('tag registry (SPOOL-177)', () => {
     expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_2, kind: 'clip', target_id: id }]);
     db.prepare('DELETE FROM clip WHERE id = ?').run(id);
     expect(tags(db, TENANT_A)).toEqual([]);
+  });
+
+  it('moves the registry row when a record changes its ID', () => {
+    const { db } = memoryDatabase();
+    tenant(db, TENANT_A);
+    shelf(db, TENANT_A, 'one', TAG_1);
+    db.prepare('UPDATE location SET id = ? WHERE id = ?').run('uno', 'one');
+    expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: 'uno' }]);
+    // An update that changes nothing leaves the registry alone.
+    db.prepare('UPDATE location SET name = ? WHERE id = ?').run('Renamed', 'uno');
+    expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: 'uno' }]);
+  });
+
+  it('never replaces a location or clip row in place, which would skip the delete triggers', () => {
+    const found: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (
+          /\.(ts|js|sql)$/.test(entry.name) &&
+          !entry.name.endsWith('tag-registry.test.ts')
+        ) {
+          const text = readFileSync(path, 'utf8');
+          if (/(INSERT\s+OR\s+REPLACE|REPLACE\s+INTO)\s+(INTO\s+)?(location|clip)\b/i.test(text)) {
+            found.push(path);
+          }
+        }
+      }
+    };
+    for (const dir of ['app/src', 'app/migrations', 'scripts']) walk(dir);
+    expect(found).toEqual([]);
+  });
+
+  it('stops the migration, changing nothing, when a location and a clip share a tag ID', () => {
+    const old = openDatabase(':memory:');
+    runMigrationsUpTo(old, new URL('../../migrations/', import.meta.url).pathname, '0001_init.sql');
+    tenant(old, TENANT_A);
+    shelf(old, TENANT_A, 'one', TAG_1);
+    clip(old, TENANT_A, filament(old, TENANT_A), TAG_1);
+    expect(() => runMigrations(old)).toThrow(/UNIQUE/i);
+    const names = old.prepare('SELECT name FROM sqlite_master WHERE name = ?').all('tag');
+    expect(names).toEqual([]);
+    expect(old.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toMatchObject({
+      n: 1,
+    });
   });
 
   it('rejects a malformed tag ID in the registry itself', () => {
