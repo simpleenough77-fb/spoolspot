@@ -51,7 +51,8 @@ export type EventGuard = ClipStillAtGuard;
 
 /**
  * A guard rendered to an SQL predicate (fixed text) and its bound values, for the state change that
- * goes in the same batch as the event. Output only: nothing in this module accepts it as input.
+ * goes in the same batch as the event. Output only: nothing in this module accepts it as input. It is
+ * returned frozen, with a frozen params array, so it cannot change between guardCondition and its use.
  */
 export interface GuardCondition {
   readonly sql: string;
@@ -177,9 +178,9 @@ function readGuard(value: unknown): ClipStillAtGuard {
 /**
  * Internal check on every statement this module builds: one bound value per `?`, and no numbered or
  * named parameters. node:sqlite binds a missing value as NULL, so a count mismatch would fail open.
- * Exported for its test only.
+ * It only counts placeholders: it does not sanitise SQL, and it is not exported.
  */
-export function checkBindings(statement: Statement): void {
+function assertPlaceholderCount(statement: Statement): void {
   const { query } = statement;
   const params = statement.params ?? [];
   if (/\?\d|[:@$][A-Za-z_]/.test(query)) {
@@ -204,17 +205,17 @@ const CLIP_STILL_AT_SQL =
   ' >= d.capacity)))';
 
 function render(tenantId: string, clipId: string, guard: ClipStillAtGuard): GuardCondition {
-  const condition: GuardCondition = {
+  const condition: GuardCondition = Object.freeze({
     sql: CLIP_STILL_AT_SQL,
-    params: [
+    params: Object.freeze([
       tenantId,
       clipId,
       guard.locationId,
       guard.hardLimit.confirm ? 1 : 0,
       guard.hardLimit.destinationId,
-    ],
-  };
-  checkBindings({ query: condition.sql, params: condition.params });
+    ]),
+  });
+  assertPlaceholderCount({ query: condition.sql, params: condition.params });
   return condition;
 }
 
@@ -281,6 +282,6 @@ export function eventInsert(principal: Principal, event: NewEvent, guard?: Event
       ...(condition?.params ?? []),
     ],
   };
-  checkBindings(statement);
+  assertPlaceholderCount(statement);
   return statement;
 }

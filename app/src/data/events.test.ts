@@ -18,7 +18,6 @@ import {
 } from '../testing.ts';
 import * as eventsModule from './events.ts';
 import {
-  checkBindings,
   EVENT_TYPES,
   eventInsert,
   guardCondition,
@@ -454,8 +453,27 @@ describe('the event log across tenants', () => {
     expect(eventA).toBeDefined();
     const secrets = [eventA?.id ?? '', s.clipA, s.redA, eventA?.occurred_at ?? ''];
 
-    // Every read the data layer offers today, asked by B with A's ids where an id is taken.
-    const b = createScopedData(s.sql, principal(TENANT_B));
+    // Every read the data layer offers today, asked by B with A's ids where an id is taken. The Sql
+    // they run on refuses any executed query that names the event table, so a table name built at run
+    // time (which the source scan below cannot see) is caught on every path exercised here.
+    const eventQueries: string[] = [];
+    const watch = (query: string): void => {
+      if (readsEventTable(query)) {
+        eventQueries.push(query);
+        throw new Error('a read path queried the event table');
+      }
+    };
+    const watched: Sql = {
+      all: (query, params) => {
+        watch(query);
+        return s.sql.all(query, params);
+      },
+      batch: (statements) => {
+        for (const st of statements) watch(st.query);
+        return s.sql.batch(statements);
+      },
+    };
+    const b = createScopedData(watched, principal(TENANT_B));
     const answers = await Promise.all([
       b.locationSummary(),
       b.locationTree(),
@@ -469,6 +487,7 @@ describe('the event log across tenants', () => {
       b.resolveTag(eventA?.id ?? ''),
       b.tagView(eventA?.id ?? ''),
     ]);
+    expect(eventQueries).toEqual([]);
     const seen = JSON.stringify(answers);
     for (const secret of secrets) expect(seen).not.toContain(secret);
     expect(s.events(TENANT_B)).toHaveLength(0);
@@ -548,7 +567,7 @@ describe('the event guard is a closed set rendered by the helper (review round 1
 
   it('exports no way to pass SQL text in: the module surface is exactly this', () => {
     expect(Object.keys(eventsModule).sort()).toEqual(
-      ['EVENT_TYPES', 'InvalidEventError', 'checkBindings', 'eventInsert', 'guardCondition'].sort(),
+      ['EVENT_TYPES', 'InvalidEventError', 'eventInsert', 'guardCondition'].sort(),
     );
   });
 
@@ -612,31 +631,50 @@ describe('the event guard is a closed set rendered by the helper (review round 1
     expect(s.events(TENANT_A)).toHaveLength(1);
   });
 
-  it('every placeholder has exactly one bound value, and only plain ? placeholders are used', () => {
+  it('every statement the helper builds has one bound value per ? and only plain ? placeholders', async () => {
+    const s = await setup();
+    const p = principal(TENANT_A);
+    const built = [
+      eventInsert(p, {
+        type: 'intake',
+        clipId: null,
+        filamentId: s.redA,
+        fromLocationId: null,
+        toLocationId: 'closet-storage.shelf-1',
+      }),
+      eventInsert(p, moveOf(s.clipA, 'loc1.shelf-1', 'loc1.shelf-2')),
+      eventInsert(p, moveOf(s.clipA, null, 'loc1.shelf-2'), stillAt(null, 'loc1.shelf-2')),
+      eventInsert(p, moveOf(s.clipA, null, 'loc1.shelf-2'), stillAt(null, 'loc1.shelf-2', true)),
+    ];
+    const condition = guardCondition(p, s.clipA, stillAt('loc1.shelf-1', 'loc1.shelf-2'));
+    for (const st of [...built, { query: condition.sql, params: condition.params }]) {
+      expect(st.query.split('?').length - 1).toBe(st.params?.length ?? 0);
+      expect(st.query).not.toMatch(/\?\d|[:@$][A-Za-z_]/);
+    }
+  });
+
+  it('guardCondition needs the inventory write scope', async () => {
+    const s = await setup();
+    expect(() =>
+      guardCondition(
+        principal(TENANT_A, [Scope.LocationsRead]),
+        s.clipA,
+        stillAt('loc1.shelf-1', 'loc1.shelf-2'),
+      ),
+    ).toThrow(ForbiddenError);
+  });
+
+  it('guardCondition returns a frozen condition with frozen params', async () => {
+    const s = await setup();
+    const condition = guardCondition(
+      principal(TENANT_A),
+      s.clipA,
+      stillAt('loc1.shelf-1', 'loc1.shelf-2'),
+    );
+    expect(Object.isFrozen(condition) && Object.isFrozen(condition.params)).toBe(true);
     expect(() => {
-      checkBindings({ query: 'SELECT ?, ?', params: [1, 2] });
-    }).not.toThrow();
-    expect(() => {
-      checkBindings({ query: 'SELECT 1' });
-    }).not.toThrow();
-    expect(() => {
-      checkBindings({ query: 'SELECT ?, ?', params: [1] });
-    }).toThrow(/placeholders/);
-    expect(() => {
-      checkBindings({ query: 'SELECT ?', params: [1, 2] });
-    }).toThrow(/placeholders/);
-    expect(() => {
-      checkBindings({ query: 'SELECT ?1, ?', params: [1, 2] });
-    }).toThrow(/numbered/);
-    expect(() => {
-      checkBindings({ query: 'SELECT :t, ?', params: [1, 2] });
-    }).toThrow(/named/);
-    expect(() => {
-      checkBindings({ query: 'SELECT @t', params: [1] });
-    }).toThrow(/named/);
-    expect(() => {
-      checkBindings({ query: 'SELECT $t', params: [1] });
-    }).toThrow(/named/);
+      (condition.params as unknown[]).push(TENANT_B);
+    }).toThrow(TypeError);
   });
 
   it('renders exactly these query texts, with every value bound and none in the text', async () => {
