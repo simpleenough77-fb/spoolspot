@@ -208,6 +208,7 @@ describe('migration 0004: boxed stock at passive storage only', () => {
     expect(runMigrations(db)).toEqual([
       '0004_stock_passive_only.sql',
       '0005_container_stays_container.sql',
+      '0006_retired_tag_ids.sql',
     ]);
     // Nothing deleted or moved.
     expect(db.prepare('SELECT * FROM stock_line ORDER BY rowid').all()).toEqual(before);

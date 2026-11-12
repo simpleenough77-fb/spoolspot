@@ -64,7 +64,16 @@ export function isTagConflict(error: unknown): boolean {
 }
 
 /**
- * Runs `attempt` with a fresh tag ID, and again with another when the ID is already taken. A collision
+ * True when the database refused a tag ID because it is retired in this tenant (migration 0006): a
+ * registry insert or update carrying an ID that once was a place's or clip's tag there. Matched on the
+ * trigger's own message only, which names no ID or record.
+ */
+export function isRetiredTagRefusal(error: unknown): boolean {
+  return error instanceof Error && /\btag id retired\b/.test(error.message);
+}
+
+/**
+ * Runs `attempt` with a fresh tag ID, and again with another when the ID is already taken or retired. A collision
  * among 32^12 values is very unlikely; this is the handling for when it happens anyway. Other errors
  * are thrown at once. `attempt` must be safe to run again (a failed write stores nothing).
  */
@@ -77,7 +86,8 @@ export async function withFreshTag<T>(
     try {
       return await attempt(generate());
     } catch (error) {
-      if (!isTagConflict(error) || n >= maxAttempts) throw error;
+      // A fresh ID that happens to be retired here is as unusable as one in use: try another.
+      if (!(isTagConflict(error) || isRetiredTagRefusal(error)) || n >= maxAttempts) throw error;
     }
   }
 }

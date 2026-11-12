@@ -68,7 +68,7 @@ function addFilament(
 }
 
 describe('migrations 0001 and 0002', () => {
-  it('creates exactly the nine tables (0003 adds the event delete grant and its closer)', () => {
+  it('creates exactly the ten tables (0003 adds the event delete grant and its closer, 0006 tag_retired)', () => {
     const { db } = memoryDatabase();
     expect(tables(db)).toEqual([
       'clip',
@@ -79,6 +79,7 @@ describe('migrations 0001 and 0002', () => {
       'location',
       'stock_line',
       'tag',
+      'tag_retired',
       'tenant_settings',
     ]);
   });

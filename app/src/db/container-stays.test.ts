@@ -128,16 +128,25 @@ describe('migration 0005: a container never becomes a leaf', () => {
     ).toEqual({ name: 'Renamed', parent: 'room' });
   });
 
-  it('leaves leaf to container as it was: allowed for an empty leaf (its tag is dropped), refused while it holds a clip', () => {
+  it('leaf to container: allowed for an empty leaf, which keeps its tag as the container tag (0006, D4); refused while it holds a clip', () => {
     const { db } = memoryDatabase();
     populate(db, TENANT_A);
-    // Today (0001): an empty leaf may become a container; clearing tag_id makes 0002 drop its registry row.
+    // An empty leaf may become a container (0001). Since 0006 its tag stays with the place as the
+    // container's registry-only tag; the column is cleared (0001's CHECK) and the ID is not retired.
     toContainer(db, TENANT_A, 'shelf');
     expect(leafOf(db, TENANT_A, 'shelf')).toEqual({ type: 'container', leaf: 0 });
     expect(
       db
-        .prepare('SELECT COUNT(*) AS n FROM tag WHERE tenant_id = ? AND tag_id = ?')
-        .get(TENANT_A, TAG_SHELF),
+        .prepare('SELECT tag_id FROM location WHERE tenant_id = ? AND id = ?')
+        .get(TENANT_A, 'shelf'),
+    ).toEqual({ tag_id: null });
+    expect(
+      db
+        .prepare('SELECT kind, target_id FROM tag WHERE tenant_id = ? AND tag_id = ?')
+        .all(TENANT_A, TAG_SHELF),
+    ).toEqual([{ kind: 'location', target_id: 'shelf' }]);
+    expect(
+      db.prepare('SELECT COUNT(*) AS n FROM tag_retired WHERE tenant_id = ?').get(TENANT_A),
     ).toEqual({ n: 0 });
     // And once a container, it stays one.
     expect(() => {
@@ -203,7 +212,10 @@ describe('existing databases: leaves with a registry-only tag are kept and liste
     toLeaf(db, TENANT_A, 'empty');
     toLeaf(db, TENANT_B, 'bare');
     const before = snapshot(db);
-    expect(runMigrations(db)).toEqual(['0005_container_stays_container.sql']);
+    expect(runMigrations(db)).toEqual([
+      '0005_container_stays_container.sql',
+      '0006_retired_tag_ids.sql',
+    ]);
     expect(snapshot(db)).toEqual(before);
     // B's 'bare' was untagged, so it has nothing out of step; A's 'empty' kept its registry row.
     expect(leafTagDesync(db)).toEqual([

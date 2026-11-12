@@ -56,9 +56,21 @@ function exists(db: DatabaseSync, type: 'table' | 'trigger', name: string): bool
   );
 }
 
+/** Every trigger migration 0006 creates or recreates. */
+export const TAG_RETIREMENT_TRIGGERS: readonly string[] = [
+  'tag_retired_refused_insert',
+  'tag_retired_refused_update',
+  'tag_retire_on_delete',
+  'tag_retire_on_update',
+  'tag_retired_is_not_updated',
+  'tag_retired_kept_while_tenant_has_data',
+  'location_tag_update',
+  'clip_tag_update',
+];
+
 /**
  * Throws DatabaseIntegrityError when the database is not safe to serve: foreign keys off, an event log
- * trigger missing, or an event delete grant left behind (a grant may only exist inside the batch that
+ * or tag retirement trigger missing, or an event delete grant left behind (a grant may only exist inside the batch that
  * opened it). Run after migrations, before anything else uses the database.
  */
 export function verifyDatabase(db: DatabaseSync): void {
@@ -79,6 +91,15 @@ export function verifyDatabase(db: DatabaseSync): void {
   for (const trigger of required) {
     if (!exists(db, 'trigger', trigger)) {
       throw new DatabaseIntegrityError(`the event log trigger ${trigger} is missing`);
+    }
+  }
+  // The triggers that retire a tag ID for good and keep it retired (migration 0006), and the two it
+  // recreates. Same reason: a store that splits a migration could keep the table and lose a trigger.
+  if (exists(db, 'table', 'tag_retired')) {
+    for (const trigger of TAG_RETIREMENT_TRIGGERS) {
+      if (!exists(db, 'trigger', trigger)) {
+        throw new DatabaseIntegrityError(`the tag retirement trigger ${trigger} is missing`);
+      }
     }
   }
   if (exists(db, 'table', 'event_delete_grant')) {

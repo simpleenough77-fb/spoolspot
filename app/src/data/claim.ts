@@ -9,13 +9,22 @@
 // bound to the caller's tenant. A tag ID is unique per tenant (SPOOL-177), so the same ID in another
 // tenant neither blocks a claim nor is revealed by one.
 import type { Sql } from '../db/sql.ts';
-import { isReservedTagId, isTagConflict, isTargetTagConflict, normalizeTagId } from './tags.ts';
+import {
+  isReservedTagId,
+  isRetiredTagRefusal,
+  isTagConflict,
+  isTargetTagConflict,
+  normalizeTagId,
+} from './tags.ts';
 
 export type ClaimRefusal =
   | 'invalid_tag'
   /** Unknown place, or another tenant's place: the same answer. */
   | 'location_not_found'
-  /** The ID is already on a clip or a place in this tenant. Says nothing about which. */
+  /**
+   * The ID is on a clip or a place in this tenant, or was and is retired for good (migration 0006).
+   * Says nothing about which.
+   */
   | 'tag_in_use'
   /** The place already has a tag; claiming again needs `replace`. */
   | 'location_has_tag'
@@ -109,10 +118,13 @@ export function createClaimOps(deps: {
         }) as const;
       if (settled) return done(false);
       // The place's own registry row is not "in use elsewhere": claiming it again sets the leaf's column.
+      // A retired ID (0006) answers exactly like one in use; the database refuses it anyway.
       if (registered !== tagId) {
         const inUse = await sql.all<{ one: number }>(
-          'SELECT 1 AS one FROM tag WHERE tenant_id = ? AND tag_id = ?',
-          [tenantId, tagId],
+          `SELECT 1 AS one FROM tag WHERE tenant_id = ? AND tag_id = ?
+           UNION ALL
+           SELECT 1 AS one FROM tag_retired WHERE tenant_id = ? AND tag_id = ?`,
+          [tenantId, tagId, tenantId, tagId],
         );
         if (inUse.length > 0) return { ok: false, refusal: 'tag_in_use' };
       }
@@ -151,7 +163,10 @@ export function createClaimOps(deps: {
       try {
         [changed = 0] = await sql.batch([statement, MORE_THAN_ONE_ROW_ABORTS]);
       } catch (error) {
-        if (isTagConflict(error)) return { ok: false, refusal: 'tag_in_use' };
+        // Retired between the check and the write: the same answer as in use, never a 500.
+        if (isTagConflict(error) || isRetiredTagRefusal(error)) {
+          return { ok: false, refusal: 'tag_in_use' };
+        }
         // The place got a tag from another request between the check and the write.
         if (isTargetTagConflict(error)) return { ok: false, refusal: 'conflict' };
         if (isGuardFailure(error)) throw new ClaimInvariantError();

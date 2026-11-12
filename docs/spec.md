@@ -29,7 +29,8 @@ Four location types:
 - Clip storage may carry an optional manufacturer preference, used as a hint for suggestions and never enforced.
 - Printers, AMS units, dryers and similar are containers; only their slots are leaves.
 - A container stays a container: it is never changed into a leaf, even when it holds one leaf or none.
-- A tag goes with its place. Moving a place into another container changes only its parent: its tag, the tags of everything inside it, and the clips and stock there stay as they are.
+- A tag goes with its place. Moving a place into another container changes only its parent: its tag, the tags of everything inside it, and the clips and stock there stay as they are. A leaf that becomes a container keeps its tag as the container's tag.
+- A lost or damaged tag can be replaced by a new one. A tag ID that stops being the tag of its place or clip (replaced, removed, or its place or clip deleted) is retired and never used again in that inventory; to the tag lookup it looks like any unknown tag.
 - NFC pockets on the printed clip holders map one-to-one to active_use slots. Shelves, drawers and clip bins get sticker tags. Every tag flow has a non-NFC equivalent.
 
 The starting tree is in [`seed/locations-seed.json`](../seed/locations-seed.json), validated against [`schema/locations-seed.schema.json`](../schema/locations-seed.schema.json): 81 locations (30 slots, 9 active shelves with 107 places, 14 passive shelves and drawers, 1 clip bin).

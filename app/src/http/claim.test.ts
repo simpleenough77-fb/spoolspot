@@ -197,9 +197,12 @@ describe('POST /api/v1/tags/:tag/claim (SPOOL-191)', () => {
       changed: true,
     });
     expect(columnTag(TENANT_A, SHELF)).toBe(TAG_2);
-    // The old ID is released, the new one recorded, nothing else left behind.
+    // The new ID is recorded, nothing else left behind; the old ID is retired for good (SPOOL-201):
+    // claiming it anywhere answers exactly like an ID in use.
     expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_2, kind: 'location', target_id: SHELF }]);
-    expect((await claim(TAG_1, { location_id: OTHER_SHELF })).status).toBe(200);
+    const old = await claim(TAG_1, { location_id: OTHER_SHELF });
+    expect(old.status).toBe(409);
+    expect(await old.text()).toBe(JSON.stringify({ error: 'tag_in_use' }));
   });
 
   it('stores nothing when the place changed between the check and the write', async () => {
@@ -659,8 +662,14 @@ describe('claimTag reads the current tag the same way for leaves and containers 
         registry: [{ tag_id: tag, kind: 'location', target_id: 'legacy' }],
       });
     }
-    // The old ID was released: claiming it again is a plain replace.
-    expect(await data(TENANT_A).claimTag(LEGACY_TAG, 'legacy', true)).toMatchObject({ ok: true });
+    // The old IDs are retired for good (SPOOL-201): claiming one again is refused as in use.
+    for (const old of [LEGACY_TAG, TAG_2]) {
+      expect(await data(TENANT_A).claimTag(old, 'legacy', true)).toEqual({
+        ok: false,
+        refusal: 'tag_in_use',
+      });
+    }
+    expect(state(TENANT_A).column).toBe(TAG_3);
   });
 
   it("another tenant's same-id container and same tag are never read or changed", async () => {

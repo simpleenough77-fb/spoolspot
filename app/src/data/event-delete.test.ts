@@ -689,6 +689,8 @@ describe('deleteTenant', () => {
       filaments: 2,
       locations: beforeA.location,
       orphanTags: 0,
+      // Every tag A had was retired by the deletes of its clips and places (0006), then went with A.
+      retiredTags: beforeA.tag,
       tenant: 1,
     });
     expect(Object.values(countsFor(db, TENANT_A)).every((n) => n === 0)).toBe(true);
