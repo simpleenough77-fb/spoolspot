@@ -23,8 +23,8 @@
 --     another tenant could always hold the same ID, and a tenant's retired IDs neither block nor show
 --     in any other tenant. Every statement below is bound to the row's own tenant.
 --   * A retired row is never changed, and is removed only once its tenant holds no place, clip or
---     registry row: that is tenant deletion (app/src/data/tenant-delete.ts), which removes everything
---     of the tenant. A tenant recreated under the same id afterwards starts with no retired IDs.
+--     registry row: that is tenant deletion (the operator module in app/src/data), which removes
+--     everything of the tenant. A tenant recreated under the same id afterwards starts with no retired IDs.
 --
 -- 2. A leaf that becomes a container keeps its tag (owner decision D4). 0001 makes a container's
 -- tag_id NULL, so the change clears the column; until now 0002's trigger (kept by 0005) then dropped
