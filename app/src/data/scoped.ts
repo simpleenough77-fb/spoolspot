@@ -201,8 +201,9 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       [tenantId, clip.filament_id, tenantId, clip.filament_id],
     );
     const preferred = await sql.all<{ id: string }>(
+      // A manufacturer preference applies to clip storage only (owner decision 2026-11-11).
       `SELECT id FROM location
-        WHERE tenant_id = ? AND leaf = 1 AND prefers_manufacturer = ?`,
+        WHERE tenant_id = ? AND leaf = 1 AND type = 'clip_storage' AND prefers_manufacturer = ?`,
       [tenantId, clip.manufacturer],
     );
     return {
@@ -408,6 +409,17 @@ interface HeldClip {
 }
 
 /**
+ * Which leaves may be suggested for a held clip, by its state (owner decision 2026-11-11, SPOOL-191):
+ * a clip on a spool goes to active storage; a free clip, or one whose spool is empty, goes to clip
+ * storage. Slots are never suggested (the load workflow fills them).
+ */
+const CANDIDATE_TYPES: Readonly<Record<ClipSummary['state'], readonly LocationType[]>> = {
+  on_spool: ['active_storage'],
+  free: ['clip_storage'],
+  spool_empty: ['clip_storage'],
+};
+
+/**
  * The one leaf a container tag suggests for the held clip (or for nothing held), or null. Every rule
  * that limits the candidates lives here, after the shared ranking in suggestPlacements.
  */
@@ -422,9 +434,12 @@ function containerSuggestion(
     const from = [...flatten(tree)].find((n) => n.id === held.locationId);
     if (from?.type === 'active_use') return null;
   }
+  // With nothing held, any leaf but a slot (most free first, unchanged).
+  const allowed = (type: LocationType): boolean =>
+    held === null ? type !== 'active_use' : CANDIDATE_TYPES[held.state].includes(type);
   return (
     suggestPlacements(tree, 1, undefined, Number.MAX_SAFE_INTEGER, container, held?.prefer).find(
-      (s) => s.type !== 'active_use',
+      (s) => allowed(s.type),
     ) ?? null
   );
 }

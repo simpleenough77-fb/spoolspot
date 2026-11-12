@@ -144,7 +144,7 @@ describe('container tags (SPOOL-191)', () => {
     expect(leaf.kind).toBe('location');
   });
 
-  it('suggests by the intake order: same filament, then manufacturer preference, then most free', async () => {
+  it('suggests by the intake order for an on_spool clip: same filament, then most free', async () => {
     const { data, filament, clip, boxed, db } = await setup();
     const acme = filament(TENANT_A, 'Acme');
     const other = filament(TENANT_A, 'Other');
@@ -167,16 +167,14 @@ describe('container tags (SPOOL-191)', () => {
     expect(view.held_clip_used).toBe(true);
     expect(view.suggestion).toMatchObject({ location_id: 'loc2.shelf-4', reason: 'same_filament' });
 
-    // Once that shelf is full (hard limit) it is never suggested; manufacturer preference is next.
+    // Once that shelf is full (hard limit) it is never suggested. A manufacturer preference on an
+    // active shelf is ignored (owner decision 2026-11-11: it applies to clip storage only).
     boxed(TENANT_A, other, 'loc2.shelf-4', 8);
     db.prepare(
       "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'loc3.shelf-3'",
     ).run(TENANT_A);
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
-    expect(view.suggestion).toMatchObject({
-      location_id: 'loc3.shelf-3',
-      reason: 'manufacturer_preference',
-    });
+    expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
 
     // The held clip's own place is never offered, even when it has the most room.
     db.prepare(
@@ -246,6 +244,96 @@ describe('container tags (SPOOL-191)', () => {
     expect(asContainer(await scoped.tagView(ACTIVE_TAG)).suggestion).toMatchObject({
       location_id: 'loc1.shelf-1',
       reason: 'most_free',
+    });
+  });
+
+  describe('candidates by the held clip’s state (owner decision 2026-11-11)', () => {
+    const HOME_TAG = 'C0NTA1NER0HM';
+    const CLIPS_TAG = 'C0NTA1NER0CS';
+    async function stateSetup() {
+      const s = await setup();
+      s.tagContainer(TENANT_A, HOME_TAG, 'home');
+      s.tagContainer(TENANT_A, CLIPS_TAG, 'clips');
+      const set = (id: string, capacity: number, prefers: string | null = null): void => {
+        s.db
+          .prepare(
+            'UPDATE location SET capacity = ?, prefers_manufacturer = ? WHERE tenant_id = ? AND id = ?',
+          )
+          .run(capacity, prefers, TENANT_A, id);
+      };
+      return { ...s, set, scoped: s.data(TENANT_A), acme: s.filament(TENANT_A, 'Acme') };
+    }
+
+    it('never sends an on_spool clip to a clip bin that prefers its manufacturer (S1)', async () => {
+      const { scoped, set, clip, acme } = await stateSetup();
+      set('clips.bin-1', 50, 'Acme');
+      const held = clip(TENANT_A, acme, 'loc1.shelf-1');
+      const view = asContainer(await scoped.tagView(HOME_TAG, held));
+      expect(view.suggestion).toMatchObject({
+        location_id: 'loc1.shelf-2',
+        type: 'active_storage',
+        reason: 'most_free',
+      });
+    });
+
+    it('never sends an on_spool clip to a passive shelf boxing the same filament (S2)', async () => {
+      const { scoped, set, clip, boxed, acme } = await stateSetup();
+      set('closet-storage.shelf-1', 50);
+      boxed(TENANT_A, acme, 'closet-storage.shelf-1', 3);
+      const held = clip(TENANT_A, acme, 'loc1.shelf-1');
+      let view = asContainer(await scoped.tagView(HOME_TAG, held));
+      expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
+      // Another clip of the filament on an active shelf still ranks that shelf first.
+      clip(TENANT_A, acme, 'loc3.shelf-2');
+      view = asContainer(await scoped.tagView(HOME_TAG, held));
+      expect(view.suggestion).toMatchObject({
+        location_id: 'loc3.shelf-2',
+        type: 'active_storage',
+        reason: 'same_filament',
+      });
+    });
+
+    for (const state of ['free', 'spool_empty'] as const) {
+      it(`sends a ${state} clip only to clip storage, where its manufacturer preference ranks`, async () => {
+        const { scoped, set, clip, boxed, acme, db } = await stateSetup();
+        db.prepare(
+          "INSERT INTO location (tenant_id, id, name, type, parent, leaf, capacity, capacity_mode, prefers_manufacturer, tag_source) VALUES (?, 'clips.bin-2', 'Clip bin 2', 'clip_storage', 'clips', 1, 5, 'soft', 'Acme', 'sticker')",
+        ).run(TENANT_A);
+        set('clips.bin-1', 20);
+        set('closet-storage.shelf-1', 50);
+        // The same filament on an active and a passive shelf: neither is a candidate for this clip.
+        clip(TENANT_A, acme, 'loc2.shelf-2');
+        boxed(TENANT_A, acme, 'closet-storage.shelf-1', 3);
+        const held = clip(TENANT_A, acme, 'loc2.shelf-1', state);
+        let view = asContainer(await scoped.tagView(HOME_TAG, held));
+        expect(view.suggestion).toMatchObject({
+          location_id: 'clips.bin-2',
+          type: 'clip_storage',
+          reason: 'manufacturer_preference',
+        });
+        db.prepare(
+          "UPDATE location SET prefers_manufacturer = NULL WHERE tenant_id = ? AND id = 'clips.bin-2'",
+        ).run(TENANT_A);
+        view = asContainer(await scoped.tagView(HOME_TAG, held));
+        expect(view.suggestion).toMatchObject({ location_id: 'clips.bin-1', reason: 'most_free' });
+      });
+    }
+
+    it('suggests nothing when the container holds no leaf the clip’s state allows', async () => {
+      const { scoped, set, clip, acme } = await stateSetup();
+      set('clips.bin-1', 20);
+      const onSpool = clip(TENANT_A, acme, 'loc1.shelf-1');
+      const free = clip(TENANT_A, acme, null, 'free');
+      const clipsOnly = asContainer(await scoped.tagView(CLIPS_TAG, onSpool));
+      expect(clipsOnly.held_clip_used).toBe(true);
+      expect(clipsOnly.suggestion).toBeNull();
+      const shelvesOnly = asContainer(await scoped.tagView(ACTIVE_TAG, free));
+      expect(shelvesOnly.held_clip_used).toBe(true);
+      expect(shelvesOnly.suggestion).toBeNull();
+      // With nothing held the most-free rule is unchanged.
+      expect(asContainer(await scoped.tagView(CLIPS_TAG)).suggestion).toMatchObject({
+        location_id: 'clips.bin-1',
+      });
     });
   });
 
