@@ -369,14 +369,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   // What a tag stands for. Malformed, unknown and another tenant's tags all give the same 404.
+  // `held` (optional) is the id of the clip the person is holding; it ranks a container tag's suggested
+  // leaf. It is checked before the tag is looked up, so a bad `held` says nothing about the tag.
   app.get('/api/v1/tags/:tag', async (c) => {
     if (!hasScope(c.get('principal'), Scope.LocationsRead)) {
       return c.json({ error: 'forbidden' }, 403);
     }
     const key = clientKey(c);
     if (!resolverLimit.hit(key)) return tooMany(resolverLimit, key);
+    const heldValues = c.req.queries('held');
+    const held = single(heldValues);
+    if (heldValues !== undefined && (held === undefined || !CLIP_ID.test(held))) {
+      return c.json({ error: 'invalid_request' }, 400);
+    }
     const id = normalizeTagId(c.req.param('tag'));
-    const view = id === null ? null : await c.get('data').tagView(id);
+    const view = id === null ? null : await c.get('data').tagView(id, held);
     return view ? c.json(view) : c.json({ error: 'not_found' }, 404);
   });
 

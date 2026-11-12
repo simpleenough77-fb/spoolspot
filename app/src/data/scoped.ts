@@ -8,10 +8,12 @@ import type { LocationType } from '../seed/validate.ts';
 import {
   buildTree,
   checkPlacement,
+  leaves,
   suggestPlacements,
   type LocationNode,
   type LocationRow,
   type PlacementCheck,
+  type PlacementPreference,
   type PlacementSuggestion,
 } from './tree.ts';
 import { createStockOps, type StockOps } from './stock.ts';
@@ -48,21 +50,35 @@ export interface ClipSummary {
   filament: { manufacturer: string; type: string; color: string };
 }
 
+/** A location as a tag page shows it: room only, derived from what is stored. */
+export interface LocationView {
+  id: string;
+  name: string;
+  type: LocationType;
+  leaf: boolean;
+  capacity_mode: LocationNode['capacity_mode'];
+  capacity: number | null;
+  used: number;
+  free: number | null;
+}
+
 /** What a tag stands for, in the caller's tenant. */
 export type TagView =
   | { kind: 'clip'; clip: ClipSummary }
+  | { kind: 'location'; location: LocationView }
   | {
       kind: 'location';
-      location: {
-        id: string;
-        name: string;
-        type: LocationType;
-        leaf: boolean;
-        capacity_mode: LocationNode['capacity_mode'];
-        capacity: number | null;
-        used: number;
-        free: number | null;
-      };
+      location: LocationView;
+      /** A container tag (SPOOL-191): every leaf below it, in tree order, with its room. */
+      inside: LocationView[];
+      /**
+       * The best leaf inside for the held clip, by the intake order (same filament, then manufacturer
+       * preference, then most free). Never a full leaf, a leaf with no capacity or a slot. Advisory only:
+       * nothing is moved. Null when nothing inside has room.
+       */
+      suggestion: PlacementSuggestion | null;
+      /** Whether the held clip was found in this tenant and used for the ranking. */
+      held_clip_used: boolean;
     };
 
 export type MoveRefusal =
@@ -79,8 +95,12 @@ export type MoveResult =
   | { ok: false; refusal: MoveRefusal; check?: PlacementCheck };
 
 export interface ScopedData extends StockOps {
-  /** The clip or location a tag stands for; null for a malformed, unknown or other tenant's tag. */
-  tagView(tagId: string): Promise<TagView | null>;
+  /**
+   * The clip or location a tag stands for; null for a malformed, unknown or other tenant's tag. For a
+   * container tag, `heldClipId` (the clip the person is holding) ranks the suggested leaf; an unknown
+   * or other tenant's clip is ignored, exactly as if none was held.
+   */
+  tagView(tagId: string, heldClipId?: string): Promise<TagView | null>;
   /** Clips stored at one place (at most 200), or null when the place does not exist. */
   clipsAt(locationId: string): Promise<ClipSummary[] | null>;
   /**
@@ -151,6 +171,41 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     );
     return rows[0] ?? null;
   };
+  /** The intake-order preference for one clip of this tenant, or null when there is no such clip. */
+  const preferenceFor = async (clipId: string): Promise<PlacementPreference | null> => {
+    const clips = await sql.all<{
+      filament_id: string;
+      location_id: string | null;
+      manufacturer: string;
+    }>(
+      `SELECT c.filament_id, c.location_id, f.manufacturer
+         FROM clip c
+         JOIN filament f ON f.tenant_id = c.tenant_id AND f.id = c.filament_id
+        WHERE c.tenant_id = ? AND c.id = ?`,
+      [tenantId, clipId],
+    );
+    const clip = clips[0];
+    if (!clip) return null;
+    const same = await sql.all<{ location_id: string }>(
+      `SELECT s.location_id FROM stock_line s
+        WHERE s.tenant_id = ? AND s.filament_id = ? AND s.count > 0
+       UNION
+       SELECT k.location_id FROM clip k
+        WHERE k.tenant_id = ? AND k.filament_id = ? AND k.id <> ? AND k.location_id IS NOT NULL`,
+      [tenantId, clip.filament_id, tenantId, clip.filament_id, clipId],
+    );
+    const preferred = await sql.all<{ id: string }>(
+      `SELECT id FROM location
+        WHERE tenant_id = ? AND leaf = 1 AND prefers_manufacturer = ?`,
+      [tenantId, clip.manufacturer],
+    );
+    return {
+      sameFilamentAt: new Set(same.map((r) => r.location_id)),
+      manufacturerPreferredAt: new Set(preferred.map((r) => r.id)),
+      // Where the clip already is is not somewhere to move it.
+      exclude: new Set(clip.location_id === null ? [] : [clip.location_id]),
+    };
+  };
   const requireWrite = (): void => {
     if (!hasScope(principal, Scope.InventoryWrite)) throw new ForbiddenError(Scope.InventoryWrite);
   };
@@ -190,7 +245,7 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
   });
   return {
     ...stock,
-    async tagView(tagId) {
+    async tagView(tagId, heldClipId) {
       require(Scope.LocationsRead);
       const target = await resolve(tagId);
       if (target === null) return null;
@@ -198,20 +253,24 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
         const clip = await clipById(target.target_id);
         return clip ? { kind: 'clip', clip } : null;
       }
-      const node = [...flatten(await loadTree())].find((n) => n.id === target.target_id);
+      const tree = await loadTree();
+      const node = [...flatten(tree)].find((n) => n.id === target.target_id);
       if (!node) return null;
+      if (node.leaf) return { kind: 'location', location: locationView(node) };
+      // A container tag lives only in the tag registry (SPOOL-191 decision 2) and resolves to the
+      // leaves below it. The suggestion reuses suggestPlacements, so it follows the same rules as every
+      // other suggestion; slots are left out even in a container that holds only slots (decision 3).
+      const prefer = heldClipId === undefined ? null : await preferenceFor(heldClipId);
+      const suggestion =
+        suggestPlacements(tree, 1, undefined, Number.MAX_SAFE_INTEGER, node, prefer ?? {}).find(
+          (s) => s.type !== 'active_use',
+        ) ?? null;
       return {
         kind: 'location',
-        location: {
-          id: node.id,
-          name: node.name,
-          type: node.type,
-          leaf: node.leaf,
-          capacity_mode: node.capacity_mode,
-          capacity: node.capacity,
-          used: node.used,
-          free: node.free,
-        },
+        location: locationView(node),
+        inside: leaves([node]).map(locationView),
+        suggestion,
+        held_clip_used: prefer !== null,
       };
     },
     async clipsAt(locationId) {
@@ -320,6 +379,19 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       });
       return { total: by_type.reduce((n, t) => n + t.locations, 0), by_type };
     },
+  };
+}
+
+function locationView(node: LocationNode): LocationView {
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    leaf: node.leaf,
+    capacity_mode: node.capacity_mode,
+    capacity: node.capacity,
+    used: node.used,
+    free: node.free,
   };
 }
 
