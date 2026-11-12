@@ -5,9 +5,11 @@ import { describe, expect, it } from 'vitest';
 import { createDevTokenProvider } from '../auth/dev-token.ts';
 import { Scope, type Principal } from '../auth/principal.ts';
 import { createScopedData, type TagView } from '../data/scoped.ts';
+import { runMigrations } from '../db/migrate.ts';
 import { importSeed } from '../seed/import.ts';
 import {
   memoryDatabase,
+  memoryDatabaseUpTo,
   readJson,
   readSeed,
   SEED_SCHEMA_PATH,
@@ -50,8 +52,15 @@ function clipTag(): string {
   return `K${String(tagCounter).padStart(11, '0')}`;
 }
 
-async function setup() {
-  const { sql, db } = memoryDatabase();
+/**
+ * `before0004`: the database stops before migration 0004 (SPOOL-200), so a test can place boxed stock on
+ * an active shelf the way an older database could hold it, then call `migrate()` for the rest.
+ */
+async function setup(options: { before0004?: boolean } = {}) {
+  const { sql, db } = options.before0004
+    ? memoryDatabaseUpTo('0003_event_delete_grant.sql')
+    : memoryDatabase();
+  const migrate = (): string[] => runMigrations(db);
   await importSeed(sql, TENANT_A, readSeed(), readJson(SEED_SCHEMA_PATH));
   db.prepare('INSERT INTO tenant_settings (tenant_id) VALUES (?)').run(TENANT_B);
   await importSeed(sql, TENANT_B, readSeed(), readJson(SEED_SCHEMA_PATH));
@@ -97,7 +106,7 @@ async function setup() {
   const get = (path: string, app = appA) =>
     app.request(`http://localhost${path}`, { headers: { host: 'localhost', ...bearer } });
   const data = (tenant: string) => createScopedData(sql, principal(tenant));
-  return { db, sql, get, appB, data, filament, clip, boxed, tagContainer };
+  return { db, sql, get, appB, data, filament, clip, boxed, tagContainer, migrate };
 }
 
 type ContainerView = Extract<TagView, { kind: 'container' }>;
@@ -145,7 +154,9 @@ describe('container tags (SPOOL-191)', () => {
   });
 
   it('suggests by the intake order for an on_spool clip: same filament (other clips only), then most free', async () => {
-    const { data, filament, clip, boxed, db } = await setup();
+    // Built before migration 0004 so boxed stock can sit on an active shelf inside the container, as an
+    // older database can still hold it (SPOOL-200); the rest runs on the fully migrated database.
+    const { data, filament, clip, boxed, db, migrate } = await setup({ before0004: true });
     const acme = filament(TENANT_A, 'Acme');
     const other = filament(TENANT_A, 'Other');
     const held = clip(TENANT_A, acme, 'loc1.shelf-1');
@@ -156,8 +167,9 @@ describe('container tags (SPOOL-191)', () => {
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
 
     // Boxed stock is not "the same filament here" (owner decision 2026-11-12: only clipped spools
-    // count). Boxed stock lives on passive storage only (SPOOL-200): the ranking stays most free.
-    boxed(TENANT_A, acme, 'closet-storage.shelf-1', 2);
+    // count), even on an active shelf with no other clip of it: the ranking stays most free.
+    boxed(TENANT_A, acme, 'loc2.shelf-4', 2);
+    expect(migrate()).toEqual(['0004_stock_passive_only.sql']);
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
     expect(view.held_clip_used).toBe(true);
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
@@ -169,8 +181,8 @@ describe('container tags (SPOOL-191)', () => {
 
     // Once that shelf is full (hard limit) it is never suggested. A manufacturer preference on an
     // active shelf is ignored (owner decision 2026-11-11: it applies to clip storage only).
-    // Filled with clips of another filament: boxed stock cannot sit on an active shelf (SPOOL-200).
-    for (let i = 0; i < 9; i += 1) clip(TENANT_A, other, 'loc2.shelf-4');
+    // Filled with clips of another filament: new boxed stock cannot go on an active shelf (SPOOL-200).
+    for (let i = 0; i < 7; i += 1) clip(TENANT_A, other, 'loc2.shelf-4');
     db.prepare(
       "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'loc3.shelf-3'",
     ).run(TENANT_A);
@@ -378,7 +390,11 @@ describe('container tags (SPOOL-191)', () => {
   });
 
   it('ranks a held clip with its own tenant’s data only (stock, other clips, manufacturer preference)', async () => {
-    const { data, filament, clip, boxed, tagContainer, db } = await setup();
+    // Built before migration 0004 so tenant A's boxed stock can sit on an active shelf inside B's
+    // container slug, as an older database can still hold it (SPOOL-200).
+    const { data, filament, clip, boxed, tagContainer, db, migrate } = await setup({
+      before0004: true,
+    });
     // The same filament id and manufacturer exist in both tenants; every leaf slug exists in both.
     const shared = filament(TENANT_B, 'Acme');
     filament(TENANT_A, 'Acme', shared);
@@ -407,7 +423,8 @@ describe('container tags (SPOOL-191)', () => {
       reason: 'most_free',
     });
     // Tenant A: the same filament boxed and clipped, and a matching manufacturer preference.
-    boxed(TENANT_A, shared, 'closet-storage.shelf-1', 2);
+    boxed(TENANT_A, shared, 'loc2.shelf-4', 2);
+    expect(migrate()).toEqual(['0004_stock_passive_only.sql']);
     clip(TENANT_A, shared, 'loc2.shelf-3');
     db.prepare(
       "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'clips.bin-1'",

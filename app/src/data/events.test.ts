@@ -1013,6 +1013,37 @@ describe('moveClip behaves as on main (review round 1)', () => {
     expect(s.events()).toHaveLength(0);
   });
 
+  it('boxed stock filling a hard limit between the check and the write is a conflict too', async () => {
+    // The guard inside the write counts boxed stock at the destination as well as clips. Boxed stock
+    // lives on passive storage (SPOOL-200), so the destination is a passive shelf set to a hard limit.
+    const s = await setup();
+    const shelf = 'closet-storage.shelf-1';
+    s.db
+      .prepare(
+        "UPDATE location SET capacity = 2, capacity_mode = 'hard' WHERE tenant_id = ? AND id = ?",
+      )
+      .run(TENANT_A, shelf);
+    const boxed = s.db.prepare(
+      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, ?, 'spool', ?)",
+    );
+    boxed.run(TENANT_A, uuid(), s.filament(TENANT_A, `Boxed ${uuid()}`), shelf, 1);
+    const racing: Sql = {
+      all: (query, params) => s.sql.all(query, params),
+      batch: (statements) => {
+        boxed.run(TENANT_A, uuid(), s.filament(TENANT_A, `Boxed ${uuid()}`), shelf, 1);
+        return s.sql.batch(statements);
+      },
+    };
+    const result = await createScopedData(racing, principal(TENANT_A)).moveClip(
+      s.clipA,
+      shelf,
+      false,
+    );
+    expect(result).toEqual({ ok: false, refusal: 'conflict' });
+    expect(s.locationOf(s.clipA)).toBe('loc1.shelf-1');
+    expect(s.events()).toHaveLength(0);
+  });
+
   it('a clip that was not placed anywhere moves, and its event has no from', async () => {
     const s = await setup();
     const loose = s.clip(TENANT_A, s.redA, null);

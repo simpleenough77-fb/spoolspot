@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPOOL-200, migration 0004: boxed stock lines belong at passive storage only.
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { memoryDatabase, memoryDatabaseUpTo, TENANT_A, TENANT_B, uuid } from '../testing.ts';
+import {
+  memoryDatabase,
+  memoryDatabaseUpTo,
+  migrateUpTo,
+  TENANT_A,
+  TENANT_B,
+  uuid,
+} from '../testing.ts';
 import { runMigrations } from './migrate.ts';
+import { openDatabase, openDatabaseReadOnly } from './sqlite.ts';
 import { stockOffPassive } from './stock-off-passive.ts';
 
 type Db = ReturnType<typeof memoryDatabase>['db'];
@@ -115,13 +127,72 @@ describe('migration 0004: boxed stock at passive storage only', () => {
     );
   });
 
-  it('checks the place in the same tenant as the line', () => {
+  it("judges a stock line by its own tenant's place, never another tenant's of the same id", () => {
     const { db } = memoryDatabase();
     populate(db, TENANT_A);
     const fb = populate(db, TENANT_B);
-    // B's passive leaf is accepted, B's active leaf refused, whatever tenant A has under the same id.
+    // B holds a line at its passive 'passive-storage'; A has no stock there and retypes its own.
+    insertLine(db, TENANT_B, fb, 'passive-storage', 'spool', 1);
+    db.prepare(
+      "UPDATE location SET type = 'active_storage' WHERE tenant_id = ? AND id = 'passive-storage'",
+    ).run(TENANT_A);
+    // Insert (trigger 1): B can still start lines at its own passive place.
+    const fb2 = uuid();
+    db.prepare(
+      "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'Acme', 'PLA', 'Blue', 'refillable')",
+    ).run(TENANT_B, fb2);
+    insertLine(db, TENANT_B, fb2, 'passive-storage', 'spool', 1);
+    // Update of place, filament or pack (trigger 2): B's line is judged by B's place.
+    db.prepare("UPDATE stock_line SET pack = 'refill' WHERE tenant_id = ? AND filament_id = ?").run(
+      TENANT_B,
+      fb2,
+    );
+    db.prepare(
+      "UPDATE stock_line SET location_id = 'passive-storage' WHERE tenant_id = ? AND filament_id = ?",
+    ).run(TENANT_B, fb);
+    // Count up (trigger 3): B's line still counts up.
+    db.prepare(
+      'UPDATE stock_line SET count = count + 1 WHERE tenant_id = ? AND filament_id = ?',
+    ).run(TENANT_B, fb);
+    expect(
+      db
+        .prepare('SELECT pack, count FROM stock_line WHERE tenant_id = ? ORDER BY pack')
+        .all(TENANT_B),
+    ).toEqual([
+      { pack: 'refill', count: 1 },
+      { pack: 'spool', count: 2 },
+    ]);
+    // And A is refused at its own, now active, place.
+    const fa = (
+      db.prepare('SELECT id FROM filament WHERE tenant_id = ?').get(TENANT_A) as { id: string }
+    ).id;
+    expect(() => insertLine(db, TENANT_A, fa, 'passive-storage')).toThrow(/passive storage/);
+  });
+
+  it("lets a tenant retype its own empty place whatever another tenant's same id holds (trigger 4)", () => {
+    const { db } = memoryDatabase();
+    const fa = populate(db, TENANT_A);
+    const fb = populate(db, TENANT_B);
+    const retype = (tenant: string) =>
+      db
+        .prepare(
+          "UPDATE location SET type = 'clip_storage' WHERE tenant_id = ? AND id = 'passive-storage'",
+        )
+        .run(tenant);
+    // A holds stock at the id; B's own place there is empty, so B may retype it.
+    insertLine(db, TENANT_A, fa, 'passive-storage');
+    retype(TENANT_B);
+    // A is refused at its own place, which holds stock.
+    expect(() => retype(TENANT_A)).toThrow(/passive storage/);
+    // The mirror: once A's stock is gone, A may retype even though B now holds stock under the same id
+    // on another passive place.
+    db.prepare('DELETE FROM stock_line WHERE tenant_id = ?').run(TENANT_A);
+    db.prepare(
+      "UPDATE location SET type = 'passive_storage' WHERE tenant_id = ? AND id = 'passive-storage'",
+    ).run(TENANT_B);
     insertLine(db, TENANT_B, fb, 'passive-storage');
-    expect(() => insertLine(db, TENANT_B, fb, 'active-storage')).toThrow(/passive storage/);
+    retype(TENANT_A);
+    expect(() => retype(TENANT_B)).toThrow(/passive storage/);
   });
 
   it('runs on a database that already has lines elsewhere, keeps them, lets counts go down, never up', () => {
@@ -185,6 +256,84 @@ describe('migration 0004: boxed stock at passive storage only', () => {
       /passive storage/,
     );
     expect(stockOffPassive(db).map((r) => r.count)).toEqual([1, 1, 1]);
+  });
+
+  it('keeps a line left off passive storage the same line: no new filament or pack, count down only', () => {
+    const { db } = memoryDatabaseUpTo('0003_event_delete_grant.sql');
+    const fa = populate(db, TENANT_A);
+    const other = uuid();
+    db.prepare(
+      "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'Acme', 'PLA', 'Blue', 'refillable')",
+    ).run(TENANT_A, other);
+    insertLine(db, TENANT_A, fa, 'active-storage', 'spool', 2);
+    insertLine(db, TENANT_A, fa, 'passive-storage', 'spool', 1);
+    runMigrations(db);
+    const at = (place: string) => `tenant_id = '${TENANT_A}' AND location_id = '${place}'`;
+    expect(() =>
+      db.prepare(`UPDATE stock_line SET pack = 'refill' WHERE ${at('active-storage')}`).run(),
+    ).toThrow(/passive storage/);
+    expect(() =>
+      db.prepare(`UPDATE stock_line SET filament_id = ? WHERE ${at('active-storage')}`).run(other),
+    ).toThrow(/passive storage/);
+    db.prepare(`UPDATE stock_line SET count = count - 1 WHERE ${at('active-storage')}`).run();
+    expect(
+      db
+        .prepare(`SELECT filament_id, pack, count FROM stock_line WHERE ${at('active-storage')}`)
+        .get(),
+    ).toEqual({ filament_id: fa, pack: 'spool', count: 1 });
+    // On passive storage a line may still change pack or filament.
+    db.prepare(`UPDATE stock_line SET pack = 'refill' WHERE ${at('passive-storage')}`).run();
+    db.prepare(`UPDATE stock_line SET filament_id = ? WHERE ${at('passive-storage')}`).run(other);
+    expect(
+      db.prepare(`SELECT filament_id, pack FROM stock_line WHERE ${at('passive-storage')}`).get(),
+    ).toEqual({ filament_id: other, pack: 'refill' });
+  });
+
+  it('the listing script reads without changing the database file or creating side files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spoolspot-ro-'));
+    try {
+      const path = join(dir, 'data', 'spoolspot.db');
+      // A database closed cleanly by the app, with one line off passive storage from before 0004.
+      const old = openDatabase(path);
+      migrateUpTo(old, '0003_event_delete_grant.sql');
+      const f = populate(old, TENANT_A);
+      insertLine(old, TENANT_A, f, 'active-storage', 'spool', 2);
+      runMigrations(old);
+      old.close();
+      const files = () => readdirSync(join(dir, 'data')).sort();
+      const before = { bytes: readFileSync(path), mode: statSync(path).mode, files: files() };
+      expect(before.files).toEqual(['spoolspot.db']);
+      const run = spawnSync(process.execPath, ['scripts/stock-off-passive.ts'], {
+        env: { ...process.env, SPOOLSPOT_DB: path },
+        encoding: 'utf8',
+      });
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('active-storage (active_storage): Acme PLA Red, spool, count 2');
+      expect(files()).toEqual(before.files);
+      expect(statSync(path).mode).toBe(before.mode);
+      expect(readFileSync(path).equals(before.bytes)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('opens a database read only: every write is refused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spoolspot-ro-'));
+    try {
+      const path = join(dir, 'x.db');
+      const db = openDatabase(path);
+      runMigrations(db);
+      db.close();
+      const ro = openDatabaseReadOnly(path);
+      expect(() => {
+        ro.exec("INSERT INTO tenant_settings (tenant_id) VALUES ('x')");
+      }).toThrow(/readonly/);
+      ro.close();
+      expect(() => openDatabaseReadOnly(join(dir, 'missing.db'))).toThrow(/no database/);
+      expect(readdirSync(dir)).toEqual(['x.db']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('lists nothing on a database that follows the rule', () => {
