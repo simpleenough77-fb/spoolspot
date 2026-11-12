@@ -42,6 +42,28 @@ describe('demo data', () => {
     expect(suggested).not.toContain('closet-storage.shelf-1');
   });
 
+  it('puts boxed stock on passive storage only, and none when the closet shelf is not passive (SPOOL-200)', async () => {
+    const { db } = await setup();
+    fillDemo(db, TENANT_A);
+    const placed = db
+      .prepare(
+        `SELECT l.type FROM stock_line s
+           JOIN location l ON l.tenant_id = s.tenant_id AND l.id = s.location_id
+          WHERE s.tenant_id = ?`,
+      )
+      .all(TENANT_A) as { type: string }[];
+    expect(placed).toEqual([{ type: 'passive_storage' }]);
+
+    const other = await setup();
+    other.db
+      .prepare(
+        "UPDATE location SET type = 'clip_storage' WHERE tenant_id = ? AND id = 'closet-storage.shelf-1'",
+      )
+      .run(TENANT_A);
+    expect(fillDemo(other.db, TENANT_A)).toEqual({ clips: 27, stockSpools: 0, alreadyThere: false });
+    expect(other.db.prepare('SELECT COUNT(*) AS n FROM stock_line').get()).toMatchObject({ n: 0 });
+  });
+
   it('tags three places for phone demos, resolvable per tenant, and remove clears them', async () => {
     const { db, sql } = await setup();
     fillDemo(db, TENANT_A);
@@ -283,7 +305,7 @@ describe('demo data', () => {
         }
       ).id;
       db.prepare(
-        "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-00000000a001', ?, 'loc1.shelf-1', 'spool', 2)",
+        "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-00000000a001', ?, 'closet-storage.shelf-2', 'spool', 2)",
       ).run(TENANT_A, demo);
       const before = snapshot(db);
       expect(() => removeDemo(db, TENANT_A)).toThrow(DemoRemovalRefused);

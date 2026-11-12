@@ -71,6 +71,14 @@ async function scanApp() {
   db.prepare(
     "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-0000000000aa', ?, 'closet-storage.shelf-1', 'spool', 5)",
   ).run(TENANT, filament);
+  // A passive shelf set to a hard limit and already full, so adding boxed stock shows the hard-limit
+  // warning. Boxed stock goes on passive storage only (SPOOL-200), so this is where that state lives.
+  db.prepare(
+    "UPDATE location SET capacity = 1, capacity_mode = 'hard' WHERE tenant_id = ? AND id = ?",
+  ).run(TENANT, 'closet-storage.shelf-3');
+  db.prepare(
+    "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-0000000000ab', ?, 'closet-storage.shelf-3', 'spool', 1)",
+  ).run(TENANT, filament);
   // A refillable filament too, so a refill pack can be chosen and a disposable one refuses it.
   db.prepare(
     "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, '00000000-0000-4000-8000-000000000002', 'Scan', 'PETG', 'Blue', 'refillable')",
@@ -283,6 +291,24 @@ try {
     violations += await axe(tab, `/ (${scheme}, move section, mover open)`);
     violations += await reflow(tab, `/ (${scheme}, 320px wide, text at 200%, mover open)`);
     // Boxed stock: a place with a count, +/- taps, adding by choosing, the hard-limit warning, where is it.
+    // Only passive storage is offered for boxed stock (SPOOL-200): no active shelf, slot or clip bin.
+    const offered = await tab
+      .locator('#stock-place option')
+      .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+    for (const notOffered of ['loc1.shelf-2', 'clips.bin-1', 'dreammaker.ams-a.slot-1']) {
+      if (offered.includes(notOffered)) {
+        console.error(
+          `::error::the boxed stock picker offers ${notOffered}, which is not passive storage`,
+        );
+        violations += 1;
+      }
+    }
+    if (offered.length !== 14) {
+      console.error(
+        `::error::the boxed stock picker offers ${String(offered.length)} places, not the 14 passive ones`,
+      );
+      violations += 1;
+    }
     await tab.selectOption('#stock-place', 'closet-storage.shelf-1');
     await tab.locator('#stock-lines li output').first().waitFor();
     violations += expectText(
@@ -324,7 +350,7 @@ try {
     await tab.selectOption('#add-type', 'PLA');
     await tab.selectOption('#add-color', { label: 'Black' });
     violations += (await tab.locator('#add-pack option[value=refill]').isDisabled()) ? 0 : 1;
-    await tab.selectOption('#stock-place', 'loc1.shelf-2');
+    await tab.selectOption('#stock-place', 'closet-storage.shelf-3');
     await tab.click('#add-go');
     await tab.locator('#stock-anyway:not([hidden])').waitFor();
     violations += expectText(

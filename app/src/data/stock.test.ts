@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { ForbiddenError, Scope, type Principal } from '../auth/principal.ts';
 import type { Sql } from '../db/sql.ts';
 import { importSeed } from '../seed/import.ts';
+import { runMigrations } from '../db/migrate.ts';
 import {
   memoryDatabase,
+  memoryDatabaseUpTo,
   readJson,
   readSeed,
   SEED_SCHEMA_PATH,
@@ -22,7 +24,11 @@ const principal = (tenantId: string, scopes: string[]): Principal => ({
 });
 const RW = [Scope.LocationsRead, Scope.InventoryWrite];
 const SHELF = 'closet-storage.shelf-1'; // passive, soft
-const HARD = 'loc1.shelf-1'; // active storage, hard
+// Boxed stock goes on passive storage only (SPOOL-200). Passive is soft by default; this shelf is set to
+// a hard limit in setup so the hard-limit paths stay covered.
+const HARD = 'closet-storage.shelf-2';
+const ACTIVE = 'loc1.shelf-1'; // active storage
+const CLIP_BIN = 'clips.bin-1'; // clip storage
 
 async function setup() {
   const { sql, db } = memoryDatabase();
@@ -38,6 +44,10 @@ async function setup() {
   const disposable = filament(TENANT_A, 'Red', 'disposable');
   const refillable = filament(TENANT_A, 'Blue', 'refillable');
   const otherTenants = filament(TENANT_B, 'Green', 'refillable');
+  db.prepare("UPDATE location SET capacity_mode = 'hard' WHERE tenant_id = ? AND id = ?").run(
+    TENANT_A,
+    HARD,
+  );
   const data = createScopedData(sql, principal(TENANT_A, RW));
   const lines = () =>
     db
@@ -106,14 +116,113 @@ describe('adjustStock', () => {
     });
   });
 
-  it('refuses a boxed count at a loaded slot', async () => {
-    const { data, db, disposable } = await setup();
-    const row = db
+  it('refuses boxed stock at active storage, a loaded slot and clip storage, storing nothing (SPOOL-200)', async () => {
+    const { data, db, disposable, refillable, lines } = await setup();
+    const slot = db
       .prepare("SELECT id FROM location WHERE tenant_id = ? AND type = 'active_use' LIMIT 1")
       .get(TENANT_A) as { id: string };
-    expect(await data.adjustStock(disposable, row.id, 'spool', 1, false)).toMatchObject({
+    for (const [place, refusal] of [
+      [ACTIVE, 'not_passive_storage'],
+      [CLIP_BIN, 'not_passive_storage'],
+      [slot.id, 'slot_not_supported'],
+    ] as const) {
+      for (const pack of ['spool', 'refill'] as const) {
+        for (const delta of [1, -1] as const) {
+          expect(
+            await data.adjustStock(refillable, place, pack, delta, true),
+            `${place} ${pack} ${String(delta)}`,
+          ).toEqual({ ok: false, refusal });
+        }
+      }
+      expect(await data.adjustStock(disposable, place, 'spool', 1, false)).toEqual({
+        ok: false,
+        refusal,
+      });
+    }
+    expect(lines()).toEqual([]);
+    // Passive storage works as before.
+    expect(await data.adjustStock(refillable, SHELF, 'refill', 1, false)).toMatchObject({
+      ok: true,
+      line: { count: 1, location_id: SHELF, pack: 'refill' },
+    });
+  });
+
+  it("answers another tenant's place exactly like an unknown place (SPOOL-200)", async () => {
+    const { sql, db, data, disposable } = await setup();
+    // A place only tenant B has, of a type the new rule refuses, and one of a type it accepts.
+    db.prepare(
+      "INSERT INTO location (tenant_id, id, name, type, parent, leaf, capacity, capacity_mode, tag_source) VALUES (?, 'b-only-active', 'B only', 'active_storage', 'loc1', 1, 4, 'hard', 'sticker')",
+    ).run(TENANT_B);
+    db.prepare(
+      "INSERT INTO location (tenant_id, id, name, type, parent, leaf, capacity, capacity_mode, tag_source) VALUES (?, 'b-only-passive', 'B only', 'passive_storage', 'closet-storage', 1, 4, 'soft', 'sticker')",
+    ).run(TENANT_B);
+    const unknown = await data.adjustStock(disposable, 'no-such-place', 'spool', 1, false);
+    expect(unknown).toEqual({ ok: false, refusal: 'location_not_found' });
+    for (const place of ['b-only-active', 'b-only-passive']) {
+      expect(await data.adjustStock(disposable, place, 'spool', 1, false)).toEqual(unknown);
+      expect(await data.adjustStock(disposable, place, 'spool', -1, false)).toEqual(unknown);
+    }
+    const b = createScopedData(sql, principal(TENANT_B, RW));
+    expect(await b.adjustStock(disposable, 'b-only-active', 'spool', 1, false)).toEqual({
       ok: false,
-      refusal: 'slot_not_supported',
+      refusal: 'filament_not_found',
+    });
+  });
+
+  it('counts a line left at a non-passive place by an older database down to zero, never up (SPOOL-200)', async () => {
+    // Rows written before migration 0004, the way an older database could hold them.
+    const { db, sql } = memoryDatabaseUpTo('0003_event_delete_grant.sql');
+    await importSeed(sql, TENANT_A, readSeed(), readJson(SEED_SCHEMA_PATH));
+    const f = uuid();
+    db.prepare(
+      "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'Acme', 'PLA', 'Red', 'disposable')",
+    ).run(TENANT_A, f);
+    const insert = db.prepare(
+      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, ?, 'spool', ?)",
+    );
+    insert.run(TENANT_A, uuid(), f, ACTIVE, 2);
+    insert.run(TENANT_A, uuid(), f, CLIP_BIN, 1);
+    runMigrations(db);
+    const data = createScopedData(sql, principal(TENANT_A, RW));
+    const count = (place: string) =>
+      (
+        db
+          .prepare('SELECT count FROM stock_line WHERE tenant_id = ? AND location_id = ?')
+          .get(TENANT_A, place) as { count: number }
+      ).count;
+    // Up is refused, with or without confirm; nothing changes.
+    expect(await data.adjustStock(f, ACTIVE, 'spool', 1, true)).toEqual({
+      ok: false,
+      refusal: 'not_passive_storage',
+    });
+    expect(count(ACTIVE)).toBe(2);
+    // Down works, one tap at a time, to zero.
+    expect(await data.adjustStock(f, ACTIVE, 'spool', -1, false)).toMatchObject({
+      ok: true,
+      line: { count: 1, location_id: ACTIVE },
+    });
+    expect(await data.adjustStock(f, ACTIVE, 'spool', -1, false)).toMatchObject({
+      ok: true,
+      line: { count: 0 },
+    });
+    // At zero, the place answers with the rule, not "below zero": nothing more can be done there.
+    expect(await data.adjustStock(f, ACTIVE, 'spool', -1, false)).toEqual({
+      ok: false,
+      refusal: 'not_passive_storage',
+    });
+    expect(await data.adjustStock(f, ACTIVE, 'spool', 1, true)).toEqual({
+      ok: false,
+      refusal: 'not_passive_storage',
+    });
+    expect(count(ACTIVE)).toBe(0);
+    expect(await data.adjustStock(f, CLIP_BIN, 'spool', -1, false)).toMatchObject({
+      ok: true,
+      line: { count: 0 },
+    });
+    // Another pack at the same place never starts a line.
+    expect(await data.adjustStock(f, CLIP_BIN, 'refill', -1, false)).toEqual({
+      ok: false,
+      refusal: 'not_passive_storage',
     });
   });
 

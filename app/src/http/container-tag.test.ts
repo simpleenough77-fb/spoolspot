@@ -156,8 +156,8 @@ describe('container tags (SPOOL-191)', () => {
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
 
     // Boxed stock is not "the same filament here" (owner decision 2026-11-12: only clipped spools
-    // count), even on an active shelf with no other clip of it: the ranking stays most free.
-    boxed(TENANT_A, acme, 'loc2.shelf-4', 2);
+    // count). Boxed stock lives on passive storage only (SPOOL-200): the ranking stays most free.
+    boxed(TENANT_A, acme, 'closet-storage.shelf-1', 2);
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
     expect(view.held_clip_used).toBe(true);
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
@@ -169,7 +169,8 @@ describe('container tags (SPOOL-191)', () => {
 
     // Once that shelf is full (hard limit) it is never suggested. A manufacturer preference on an
     // active shelf is ignored (owner decision 2026-11-11: it applies to clip storage only).
-    boxed(TENANT_A, other, 'loc2.shelf-4', 7);
+    // Filled with clips of another filament: boxed stock cannot sit on an active shelf (SPOOL-200).
+    for (let i = 0; i < 9; i += 1) clip(TENANT_A, other, 'loc2.shelf-4');
     db.prepare(
       "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'loc3.shelf-3'",
     ).run(TENANT_A);
@@ -188,7 +189,7 @@ describe('container tags (SPOOL-191)', () => {
   });
 
   it('never suggests past a hard limit, a slot or a leaf with no capacity', async () => {
-    const { data, filament, boxed, tagContainer, db } = await setup();
+    const { data, filament, clip, tagContainer, db } = await setup();
     const f = filament(TENANT_A, 'Acme');
     const scoped = data(TENANT_A);
     for (const shelf of ACTIVE_SHELVES) {
@@ -197,7 +198,8 @@ describe('container tags (SPOOL-191)', () => {
           .prepare('SELECT capacity FROM location WHERE tenant_id = ? AND id = ?')
           .get(TENANT_A, shelf) as { capacity: number }
       ).capacity;
-      boxed(TENANT_A, f, shelf, capacity);
+      // Clips, not boxed stock: boxed stock cannot sit on an active shelf (SPOOL-200).
+      for (let i = 0; i < capacity; i += 1) clip(TENANT_A, f, shelf);
     }
     // Every active shelf is at its hard limit: nothing to suggest, though every leaf is listed.
     const full = asContainer(await scoped.tagView(ACTIVE_TAG));
@@ -405,7 +407,7 @@ describe('container tags (SPOOL-191)', () => {
       reason: 'most_free',
     });
     // Tenant A: the same filament boxed and clipped, and a matching manufacturer preference.
-    boxed(TENANT_A, shared, 'loc2.shelf-4', 2);
+    boxed(TENANT_A, shared, 'closet-storage.shelf-1', 2);
     clip(TENANT_A, shared, 'loc2.shelf-3');
     db.prepare(
       "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'clips.bin-1'",

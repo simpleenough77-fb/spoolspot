@@ -80,11 +80,13 @@ async function setup() {
         location_id: string | null;
       }
     ).location_id;
-  /** Boxed stock that takes `count` places at a location of one tenant. */
+  /**
+   * Clips of another filament that take `count` places at a location of one tenant. Clips, not boxed
+   * stock: boxed stock goes on passive storage only (SPOOL-200), and these places are active shelves.
+   */
   const fill = (tenant: string, location: string, count: number): void => {
-    db.prepare(
-      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, ?, 'spool', ?)",
-    ).run(tenant, uuid(), filament(tenant, `Fill ${uuid()}`), location, count);
+    const other = filament(tenant, `Fill ${uuid()}`);
+    for (let i = 0; i < count; i += 1) clip(tenant, other, location);
   };
   return { sql, db, redA, clipA, blueB, clipB, events, locationOf, filament, clip, fill };
 }

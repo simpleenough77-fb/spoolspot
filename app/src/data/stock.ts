@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Boxed stock (SPOOL-63): counts per filament, location and pack type. Counts only, changed one tap at a
-// time (+1 or -1). The database already refuses a refill pack for a disposable filament, a count below
-// zero or above 10000, and a stock line at a container; this layer checks first so the person gets a
-// plain answer, and the writes carry guards of their own so a second request cannot slip past a check.
+// time (+1 or -1). Boxed stock belongs at passive storage only (SPOOL-200): active storage and slots hold
+// opened spools through their clips, and clip storage holds clips. The database already refuses a refill
+// pack for a disposable filament, a count below zero or above 10000, and a stock line anywhere but a
+// passive leaf (migration 0004); this layer checks first so the person gets a plain answer, and the
+// writes carry guards of their own so a second request cannot slip past a check.
 import type { Sql } from '../db/sql.ts';
 import { checkPlacement, type LocationNode, type PlacementCheck } from './tree.ts';
 
@@ -30,6 +32,8 @@ export type StockRefusal =
   | 'location_not_found'
   | 'not_a_leaf'
   | 'slot_not_supported'
+  /** Boxed stock goes on passive storage only; active and clip storage hold clips (SPOOL-200). */
+  | 'not_passive_storage'
   | 'refill_not_allowed'
   | 'below_zero'
   | 'at_maximum'
@@ -158,13 +162,23 @@ export function createStockOps(deps: Deps): StockOps {
       const node = await deps.findNode(locationId);
       if (!node) return { ok: false, refusal: 'location_not_found' };
       if (!node.leaf) return { ok: false, refusal: 'not_a_leaf' };
-      // A slot holds one loaded spool, tracked through its clip (SPOOL-84), not a boxed count.
-      if (node.type === 'active_use') return { ok: false, refusal: 'slot_not_supported' };
+      const before = await lineOf(filamentId, locationId, pack);
+      const was = before?.count ?? 0;
+      if (node.type !== 'passive_storage') {
+        // A line left at another leaf type by a database from before migration 0004 can still be
+        // counted down to zero, so it can be cleared by tapping; it can never grow, and no new line
+        // starts there. A slot holds its spool through its clip (SPOOL-84), not a boxed count.
+        const clearingOldLine = delta === -1 && was > 0;
+        if (!clearingOldLine) {
+          return {
+            ok: false,
+            refusal: node.type === 'active_use' ? 'slot_not_supported' : 'not_passive_storage',
+          };
+        }
+      }
       if (pack === 'refill' && filament.spool_kind !== 'refillable') {
         return { ok: false, refusal: 'refill_not_allowed' };
       }
-      const before = await lineOf(filamentId, locationId, pack);
-      const was = before?.count ?? 0;
       if (delta === -1 && was <= 0) return { ok: false, refusal: 'below_zero' };
       if (delta === 1 && was >= MAX_COUNT) return { ok: false, refusal: 'at_maximum' };
       const check = checkPlacement(node, delta === 1 ? 1 : 0);
