@@ -47,12 +47,22 @@ export function openDatabase(path: string): DatabaseSync {
 }
 
 export function sqlFromDatabase(db: DatabaseSync): Sql {
+  // Set when a rollback fails: the connection may still be inside a half-done transaction (with an
+  // event delete grant visible to it), so it is closed and never used again. Restart to recover.
+  let unusable = false;
+  const usable = (): void => {
+    if (unusable) throw new Error('database connection is unusable after a failed rollback');
+  };
   return {
     all<T extends object>(query: string, params?: readonly SqlParam[]): Promise<T[]> {
-      return attempt(() => db.prepare(query).all(...bind(params)) as T[]);
+      return attempt(() => {
+        usable();
+        return db.prepare(query).all(...bind(params)) as T[];
+      });
     },
     batch(statements: readonly Statement[]): Promise<number[]> {
       return attempt(() => {
+        usable();
         db.exec('BEGIN IMMEDIATE');
         try {
           const changes: number[] = [];
@@ -68,7 +78,14 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
           try {
             db.exec('ROLLBACK');
           } catch {
-            /* keep the original error: the rollback failure would hide the cause */
+            // Keep the original error (the rollback failure would hide the cause), and drop the
+            // connection: closing it discards the open transaction.
+            unusable = true;
+            try {
+              db.close();
+            } catch {
+              /* already unusable */
+            }
           }
           throw error;
         }
