@@ -48,11 +48,16 @@ export function openDatabase(path: string): DatabaseSync {
 }
 
 /**
- * Open an existing database file for reading only, for operator scripts (SPOOL-200). Nothing is created
- * or changed: no directory, no journal-mode pragma, no chmod, and every write is refused. When no WAL
- * file is present the database was closed cleanly, so it is opened immutable and SQLite creates no
- * -wal or -shm file either. When a WAL file is present (the server is running, or did not shut down
- * cleanly) it is read through the WAL, so nothing committed is missed; its side files already exist.
+ * Open an existing database file for reading only, for operator scripts (SPOOL-200). The database is
+ * never written: no directory, no journal-mode pragma, no chmod, and every write is refused.
+ *
+ * - No -wal file (the database was closed cleanly): it is opened immutable, so SQLite creates no -wal or
+ *   -shm file. Immutable means no locking and no change detection: if the server writes while the file
+ *   is read, the result can be stale or the read can fail. Run such scripts with the server stopped, or
+ *   run them again if the result looks wrong. The worst case is a stale or failed read, never a write.
+ * - A -wal file (the server is running, or did not shut down cleanly): it is read through the WAL, so
+ *   nothing committed is missed. SQLite may then create a -shm file if there is none (for example after
+ *   a crash), owned by whoever runs the script; run it as the same user as the server.
  */
 export function openDatabaseReadOnly(path: string): DatabaseSync {
   if (!existsSync(path)) throw new Error(`no database at ${path}`);
