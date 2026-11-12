@@ -165,6 +165,10 @@ describe('SQLite internal names are refused, quoted or not (review of PR #59)', 
     'SELECT * FROM [pragma_optimize]',
     'SELECT * FROM `pragma_optimize`',
     'SELECT * FROM main.pragma_optimize',
+    // SQLite's legacy rule reads a single-quoted string as a name where only a name can go.
+    "SELECT * FROM 'pragma_optimize'",
+    "SELECT * FROM main.'pragma_optimize'",
+    "SELECT * FROM 'main'.'pragma_optimize'",
   ];
 
   it('refuses every spelling of a pragma function, and nothing runs', async () => {
@@ -190,6 +194,9 @@ describe('SQLite internal names are refused, quoted or not (review of PR #59)', 
       'SELECT * FROM "sqlite_temp_master"',
       'SELECT * FROM dbstat',
       'SELECT * FROM [DBSTAT]',
+      "SELECT * FROM 'sqlite_master'",
+      "SELECT * FROM 'dbstat'",
+      "SELECT * FROM 'pragma_database_list'",
     ]) {
       expect(refusedRead(q), q).toThrow(/SQLite internal name/);
     }
@@ -197,17 +204,38 @@ describe('SQLite internal names are refused, quoted or not (review of PR #59)', 
       "INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('location', NULL, '1')",
       'DELETE FROM "sqlite_sequence"',
       'UPDATE location SET name = (SELECT name FROM pragma_table_info)',
+      "INSERT INTO 'sqlite_stat1' (tbl, idx, stat) VALUES ('location', NULL, '1')",
+      "DELETE FROM 'sqlite_stat1'",
     ]) {
       expect(refusedData(q), q).toThrow(/SQLite internal name/);
       await expect(sql.batch([{ query: q }]), q).rejects.toBeInstanceOf(StatementNotAllowedError);
     }
     expect(db.prepare('PRAGMA schema_version').get()).toEqual(before);
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'sqlite_stat1'").get(),
+    ).toMatchObject({ n: 0 });
   });
 
-  it('does not refuse those names inside string values, or names that only contain them', () => {
+  it('refuses a literal whose whole value is such a name; a bound parameter carries it instead', async () => {
+    const { sql } = memoryDatabase();
     for (const q of [
       "SELECT 'pragma_optimize' AS text",
       "SELECT * FROM location WHERE name = 'sqlite_master' OR name = 'dbstat'",
+    ]) {
+      expect(refusedRead(q), q).toThrow(/SQLite internal name/);
+    }
+    await expect(
+      sql.all('SELECT name FROM location WHERE name = ? OR name = ?', ['sqlite_master', 'dbstat']),
+    ).resolves.toEqual([]);
+    await expect(sql.all('SELECT ? AS text', ['pragma_optimize'])).resolves.toEqual([
+      { text: 'pragma_optimize' },
+    ]);
+  });
+
+  it('does not refuse those names inside longer string values, or names that only contain them', () => {
+    for (const q of [
+      "SELECT 'pragma_optimize is fun' AS text",
+      "SELECT * FROM location WHERE name = 'my sqlite_master copy'",
       'SELECT my_sqlite_thing, uses_pragma_x FROM t',
       'SELECT "my_sqlite_thing" FROM t',
       'SELECT dbstats FROM t',
