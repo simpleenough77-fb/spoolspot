@@ -421,7 +421,7 @@ describe('deleteTenant', () => {
       clips: 2,
       filaments: 2,
       locations: beforeA.location,
-      tags: 0,
+      orphanTags: 0,
       tenant: 1,
     });
     expect(Object.values(countsFor(db, TENANT_A)).every((n) => n === 0)).toBe(true);

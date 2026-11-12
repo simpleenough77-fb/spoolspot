@@ -12,7 +12,11 @@ export interface TenantDeletion {
   clips: number;
   filaments: number;
   locations: number;
-  tags: number;
+  /**
+   * Tag registry rows left after clips and locations went. Deleting those already removes their tags
+   * (triggers in migration 0002), so this counts only rows that had lost their record: normally 0.
+   */
+  orphanTags: number;
   /** 1 when the tenant existed, 0 when there was nothing to delete. */
   tenant: number;
 }
@@ -20,7 +24,7 @@ export interface TenantDeletion {
 /** Deletes everything one tenant has, or nothing if any step fails. Other tenants are never touched. */
 export async function deleteTenant(sql: Sql, tenantId: string): Promise<TenantDeletion> {
   checkTenantId(tenantId);
-  const [, events, , stockLines, clips, filaments, locations, tags, tenant] = await sql.batch([
+  const [, events, , stockLines, clips, filaments, locations, orphanTags, tenant] = await sql.batch([
     // Events first, under a grant closed in the same batch: they reference clips, filaments and places.
     ...guardedEventDelete(tenantId, { scope: 'tenant' }),
     { query: 'DELETE FROM stock_line WHERE tenant_id = ?', params: [tenantId] },
@@ -38,7 +42,7 @@ export async function deleteTenant(sql: Sql, tenantId: string): Promise<TenantDe
     clips: clips ?? 0,
     filaments: filaments ?? 0,
     locations: locations ?? 0,
-    tags: tags ?? 0,
+    orphanTags: orphanTags ?? 0,
     tenant: tenant ?? 0,
   };
 }
