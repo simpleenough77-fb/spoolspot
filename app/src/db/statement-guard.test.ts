@@ -294,6 +294,7 @@ describe('raw database paths outside the adapter (SPOOL-199)', () => {
       'app/src/db/integrity.ts',
       'app/src/db/migrate.ts',
       'app/src/db/sqlite.ts',
+      'app/src/db/stock-off-passive.ts',
       'app/src/seed/demo.ts',
       'app/src/server.ts',
       'app/src/testing.ts',
