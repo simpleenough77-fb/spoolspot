@@ -84,3 +84,13 @@ BEGIN
        )
   );
 END;
+
+-- An event is never written twice. A replacing insert removes the old row without running delete
+-- triggers, so it would rewrite history past the append-only triggers; this refuses it, and any other
+-- insert of an id that is already there.
+CREATE TRIGGER event_insert_is_new
+BEFORE INSERT ON event
+BEGIN
+  SELECT RAISE(ABORT, 'event is append-only')
+  WHERE EXISTS (SELECT 1 FROM event e WHERE e.tenant_id = NEW.tenant_id AND e.id = NEW.id);
+END;

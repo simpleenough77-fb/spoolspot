@@ -127,6 +127,34 @@ describe('the event log outside a guarded batch', () => {
     expect(events(db, TENANT_B)).toBe(2);
   });
 
+  it('refuses to replace an event in place, and still takes a new one', async () => {
+    const { db, sql } = await setup();
+    const [first] = db
+      .prepare('SELECT id FROM event WHERE tenant_id = ? ORDER BY rowid LIMIT 1')
+      .all(TENANT_A) as { id: string }[];
+    const id = first?.id ?? '';
+    for (const verb of ['INSERT OR REPLACE INTO', 'REPLACE INTO']) {
+      await expect(
+        sql.batch([
+          {
+            query: `${verb} event (tenant_id, id, type) VALUES (?, ?, 'retire')`,
+            params: [TENANT_A, id],
+          },
+        ]),
+      ).rejects.toThrow(/append-only/);
+    }
+    expect(db.prepare('SELECT type FROM event WHERE id = ?').get(id)).toMatchObject({
+      type: 'move',
+    });
+    await sql.batch([
+      {
+        query: "INSERT INTO event (tenant_id, id, type) VALUES (?, ?, 'intake')",
+        params: [TENANT_A, uuid()],
+      },
+    ]);
+    expect(events(db, TENANT_A)).toBe(3);
+  });
+
   it('refuses UPDATE even while a grant is open', async () => {
     const { db, sql } = await setup();
     await expect(
