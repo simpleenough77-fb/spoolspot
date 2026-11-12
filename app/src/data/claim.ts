@@ -41,11 +41,30 @@ export interface ClaimOps {
  * registry's NOT NULL key) and the whole batch rolls back, so nothing is stored. changes() counts the
  * previous statement only, not rows its triggers touched. Zero rows is the normal "someone else got
  * there first" case and is reported as a conflict.
+ *
+ * It must run immediately after the write, in the same batch: changes() keeps its value across
+ * statements that change nothing, so anything placed between them could make it read a stale count.
+ * That D1 evaluates changes() the same way inside a batch is still to be verified (SPOOL-199).
  */
 const MORE_THAN_ONE_ROW_ABORTS = {
   query: `INSERT INTO tag (tenant_id, tag_id, kind, target_id)
           SELECT NULL, NULL, NULL, NULL WHERE changes() > 1`,
 } as const;
+
+/** The guard above fired: a claim's write would have changed more than one row. Nothing was stored. */
+export class ClaimInvariantError extends Error {
+  constructor() {
+    super('tag claim write would have changed more than one row; rolled back');
+    this.name = 'ClaimInvariantError';
+  }
+}
+
+/** True for the failure the guard statement raises (its NULL into the registry's NOT NULL key). */
+function isGuardFailure(error: unknown): boolean {
+  return (
+    error instanceof Error && /NOT NULL constraint failed: tag\.tenant_id\b/.test(error.message)
+  );
+}
 
 export function createClaimOps(deps: {
   sql: Sql;
@@ -121,6 +140,7 @@ export function createClaimOps(deps: {
         if (isTagConflict(error)) return { ok: false, refusal: 'tag_in_use' };
         // The place got a tag from another request between the check and the write.
         if (isTargetTagConflict(error)) return { ok: false, refusal: 'conflict' };
+        if (isGuardFailure(error)) throw new ClaimInvariantError();
         throw error;
       }
       if (changed > 1) throw new Error('tag claim changed more than one row');

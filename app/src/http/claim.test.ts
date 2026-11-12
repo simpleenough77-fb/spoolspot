@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createDevTokenProvider } from '../auth/dev-token.ts';
 import { ForbiddenError, Scope, type Principal } from '../auth/principal.ts';
 import { createMemorySessionStore } from '../auth/session.ts';
+import { ClaimInvariantError } from '../data/claim.ts';
 import { createScopedData } from '../data/scoped.ts';
 import { DEMO_PLACE_TAGS } from '../seed/demo.ts';
 import type { Sql, SqlParam, Statement } from '../db/sql.ts';
@@ -411,7 +412,7 @@ describe('claimTag review round 1 (SPOOL-191)', () => {
     );
     await expect(
       createScopedData(wrapped, writer(TENANT_A)).claimTag(TAG_2, CONTAINER, true),
-    ).rejects.toThrow();
+    ).rejects.toBeInstanceOf(ClaimInvariantError);
     expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: CONTAINER }]);
     expect(registry(TENANT_B)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: CONTAINER }]);
   });
@@ -473,17 +474,38 @@ describe('claimTag review round 1 (SPOOL-191)', () => {
     expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_2, kind: 'location', target_id: CONTAINER }]);
   });
 
-  it('the same ID claimed onto two leaves at once: one wins, the other is told it is in use', async () => {
+  it('the same ID claimed onto two leaves at once: the write itself refuses the loser as in use', async () => {
     const { sql, registry, columnTag } = await setup();
-    const data = () => createScopedData(sql, writer(TENANT_A));
-    const results = await Promise.all([
-      data().claimTag(TAG_1, SHELF, false),
-      data().claimTag(TAG_1, OTHER_SHELF, false),
+    // Deterministic race: another request claims TAG_1 for the other shelf right after this request's
+    // in-use check has found it free, so only the write (the registry's unique index) can stop it.
+    // Every read is also delayed, so the outcome does not depend on how calls are scheduled.
+    let raced = false;
+    const { wrapped, outcomes } = instrumented(sql);
+    const racing: Sql = {
+      all: async <T extends object>(q: string, p?: readonly SqlParam[]) => {
+        await new Promise((resolve) => setTimeout(resolve, 1 + (q.length % 3)));
+        const rows = await sql.all<T>(q, p);
+        if (!raced && q.includes('SELECT 1 AS one FROM tag')) {
+          raced = true;
+          await sql.batch([
+            {
+              query: 'UPDATE location SET tag_id = ? WHERE tenant_id = ? AND id = ?',
+              params: [TAG_1, TENANT_A, OTHER_SHELF],
+            },
+          ]);
+        }
+        return rows;
+      },
+      batch: (statements) => wrapped.batch(statements),
+    };
+    const result = await createScopedData(racing, writer(TENANT_A)).claimTag(TAG_1, SHELF, false);
+    expect(raced).toBe(true);
+    expect(outcomes).toEqual(['rejected']);
+    expect(result).toEqual({ ok: false, refusal: 'tag_in_use' });
+    expect(columnTag(TENANT_A, SHELF)).toBeNull();
+    expect(registry(TENANT_A)).toEqual([
+      { tag_id: TAG_1, kind: 'location', target_id: OTHER_SHELF },
     ]);
-    expect(results.map((r) => (r.ok ? 'ok' : r.refusal))).toEqual(['ok', 'tag_in_use']);
-    expect(columnTag(TENANT_A, SHELF)).toBe(TAG_1);
-    expect(columnTag(TENANT_A, OTHER_SHELF)).toBeNull();
-    expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: SHELF }]);
   });
 
   it('the data layer itself refuses a caller without the write scope', async () => {
