@@ -95,7 +95,7 @@ jobs:
           "${RUNNER_TEMP}/tofu" show -no-color "${RUNNER_TEMP}/tfplan" > "${RUNNER_TEMP}/plan.txt"
           { echo '### aws/identity (stg) plan, first 200 lines'; echo '```'; head -n 200 "${RUNNER_TEMP}/plan.txt"; echo '```'; } >> "${GITHUB_STEP_SUMMARY}"
       - name: Keep the plan text for 14 days (never the binary plan file)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plan-aws-identity-stg
           path: ${{ runner.temp }}/plan.txt

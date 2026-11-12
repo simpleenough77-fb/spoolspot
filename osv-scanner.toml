@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# OSV-Scanner configuration, picked up from the scanned lockfile's directory by
+# `osv-scanner scan source --lockfile=pnpm-lock.yaml` in ci.yml (no --config flag).
+# Syntax for the pinned v2.6.0 (field ignoreUntil; later docs call it effectiveUntil, which v2.6.0 rejects):
+# https://github.com/google/osv-scanner/blob/v2.6.0/docs/configuration.md
+#
+# Every entry is a gate exception (CONTRIBUTING.md, Gates): one advisory ID only, a written
+# risk acceptance with an owner, an expiry (gate exceptions at most 90 days) and the owner's
+# sign-off. From ignoreUntil (00:00 runner time on that date) the ignore stops applying and the
+# scan fails again.
+# Recorded the same way as .license-exceptions.json:
+#   package:     minimatch@10.2.6 (transitive dev dependency of ESLint; not in the production tree)
+#   owner:       Avi
+#   approved_by: Avi, 2026-11-11 (chat decision recorded on SPOOL-193); ADR sign-off pending
+#   ref:         risk-acceptance ADR, pending number (Confluence, Decisions)
+#   expires:     2026-12-31
+#   exit:        bump ESLint once a release allows minimatch ^11.0.1, then delete this entry
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2026-12-31
+reason = "SPOOL-193: minimatch 10.2.6 is a dev-only ESLint dependency matching repo-controlled globs; no fix within ESLint's ^10.2.x range. Owner Avi, expires 2026-12-31, risk-acceptance ADR, pending number."
