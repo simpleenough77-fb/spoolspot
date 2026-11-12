@@ -5,16 +5,17 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { guardedEventDelete } from '../data/event-delete.ts';
+import { DEMO_CLIP_TAG_PREFIX, DEMO_PLACE_TAG_PREFIX } from '../data/tags.ts';
 import { GRANT_CLOSED_CHECK } from '../db/integrity.ts';
 
 /** Marks every demo row: the filament's manufacturer, and the "DEM0" start of each clip tag. */
 export const DEMO_MANUFACTURER = 'SpoolSpot demo';
-const TAG_PREFIX = 'DEM0';
+const TAG_PREFIX = DEMO_CLIP_TAG_PREFIX;
 /** Fixed place tags for phone demos: "DEM1" and eight digits (valid tag IDs; clips use "DEM0"). */
 export const DEMO_PLACE_TAGS: readonly (readonly [string, string])[] = [
-  ['loc1.shelf-1', 'DEM100000001'],
-  ['loc1.shelf-2', 'DEM100000002'],
-  ['closet-storage.shelf-1', 'DEM100000003'],
+  ['loc1.shelf-1', `${DEMO_PLACE_TAG_PREFIX}00000001`],
+  ['loc1.shelf-2', `${DEMO_PLACE_TAG_PREFIX}00000002`],
+  ['closet-storage.shelf-1', `${DEMO_PLACE_TAG_PREFIX}00000003`],
 ];
 /** Closet shelf 1 gets a small soft capacity so the "over a soft limit" notice can be shown. */
 const SOFT_DEMO_LOCATION = 'closet-storage.shelf-1';
@@ -41,8 +42,8 @@ export class DemoRemovalRefused extends Error {
   }
 }
 
-/** Every demo clip tag: the prefix and eight digits (see clipTag). */
-const DEMO_CLIP_TAG_GLOB = `${TAG_PREFIX}[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]`;
+/** Every demo clip tag: the shared demo clip prefix (data/tags.ts) and eight digits (see clipTag). */
+const DEMO_CLIP_TAG_GLOB = `${DEMO_CLIP_TAG_PREFIX}[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]`;
 
 /**
  * The demo filament, found by its whole fingerprint (manufacturer, type, one of the two demo colours,

@@ -324,6 +324,38 @@ describe('demo data', () => {
     });
   });
 
+  it('keeps a claimed tag through demo removal, and the demo IDs cannot be claimed (SPOOL-191 x 194)', async () => {
+    const { db, sql } = await setup();
+    fillDemo(db, TENANT_A);
+    const owner = createScopedData(sql, {
+      subject: 's',
+      tenantId: TENANT_A,
+      scopes: new Set([Scope.LocationsRead, Scope.InventoryWrite]),
+    });
+    // The demo's own IDs are reserved, whether the place is tagged or not.
+    expect(await owner.claimTag('DEM000000001', 'loc2.shelf-1', false)).toEqual({
+      ok: false,
+      refusal: 'invalid_tag',
+    });
+    expect(await owner.claimTag('DEM100000004', 'loc2.shelf-1', false)).toEqual({
+      ok: false,
+      refusal: 'invalid_tag',
+    });
+    // A real tag on an untagged shelf, and a real tag replacing a demo place tag.
+    expect(await owner.claimTag('SKQT0000AAA1', 'loc2.shelf-1', false)).toMatchObject({ ok: true });
+    expect(await owner.claimTag('SKQT0000AAA2', 'loc1.shelf-1', true)).toMatchObject({ ok: true });
+    expect(removeDemo(db, TENANT_A)).toBe(27);
+    const tagOf = (id: string) =>
+      (db.prepare('SELECT tag_id FROM location WHERE tenant_id = ? AND id = ?').get(TENANT_A, id) as {
+        tag_id: string | null;
+      }).tag_id;
+    expect(tagOf('loc2.shelf-1')).toBe('SKQT0000AAA1');
+    expect(tagOf('loc1.shelf-1')).toBe('SKQT0000AAA2');
+    expect(await owner.resolveTag('SKQT0000AAA1')).toMatchObject({ kind: 'location', target_id: 'loc2.shelf-1' });
+    expect(await owner.resolveTag('SKQT0000AAA2')).toMatchObject({ kind: 'location', target_id: 'loc1.shelf-1' });
+    expect(await owner.resolveTag('DEM100000002')).toBeNull();
+  });
+
   it('marks everything it adds as demo', async () => {
     const { db } = await setup();
     fillDemo(db, TENANT_A);

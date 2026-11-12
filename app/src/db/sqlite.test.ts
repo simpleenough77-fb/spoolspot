@@ -120,4 +120,23 @@ describe('sql adapter', () => {
     await expect(failure).rejects.toBeInstanceOf(GrantCloseCheckError);
     await expect(failure).rejects.toMatchObject({ name: 'GrantCloseCheckError' });
   });
+
+  it("appends the closing check after the caller's last statement and adds no result for it", async () => {
+    const { sql, db } = memoryDatabase();
+    db.prepare("INSERT INTO tenant_settings (tenant_id) VALUES ('a'), ('b')").run();
+    // A statement that reads changes() must see the caller's previous write, not the closing check.
+    const guard = {
+      query:
+        'INSERT INTO tag (tenant_id, tag_id, kind, target_id) SELECT NULL, NULL, NULL, NULL WHERE changes() > 1',
+    };
+    await expect(
+      sql.batch([{ query: 'UPDATE tenant_settings SET moderate_threshold = 2' }, guard]),
+    ).rejects.toThrow(/NOT NULL/);
+    expect(
+      await sql.batch([
+        { query: "UPDATE tenant_settings SET moderate_threshold = 2 WHERE tenant_id = 'a'" },
+        guard,
+      ]),
+    ).toEqual([1, 0]);
+  });
 });
