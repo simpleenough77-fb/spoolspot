@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { memoryDatabase } from '../testing.ts';
 import { MIGRATIONS_DIR, runMigrations } from './migrate.ts';
-import { openDatabase, sqlFromDatabase } from './sqlite.ts';
+import { GrantCloseCheckError } from './integrity.ts';
+import { DatabaseUnusableError, openDatabase, sqlFromDatabase } from './sqlite.ts';
 
 describe('sql adapter', () => {
   it('refuses a statement that binds more than 100 parameters (D1 limit)', async () => {
@@ -55,7 +56,7 @@ describe('sql adapter', () => {
           { query: 'INSERT INTO nope VALUES (1)' },
         ]),
       ).rejects.toThrow(/nope/);
-      await expect(sql.all('SELECT 1 AS n')).rejects.toThrow(/unusable/);
+      await expect(sql.all('SELECT 1 AS n')).rejects.toBeInstanceOf(DatabaseUnusableError);
       await expect(sql.batch([{ query: 'SELECT 1' }])).rejects.toThrow(/unusable/);
       expect(real.isOpen).toBe(false);
       const again = openDatabase(path);
@@ -83,5 +84,40 @@ describe('sql adapter', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('keeps the connection when ROLLBACK fails only because no transaction is left', async () => {
+    const real = openDatabase(':memory:');
+    runMigrations(real);
+    // The rollback happens, then reports an error (as when SQLite already ended the transaction).
+    const flaky = new Proxy(real, {
+      get(target, key) {
+        if (key === 'exec') {
+          return (text: string) => {
+            target.exec(text);
+            if (text === 'ROLLBACK') throw new Error('cannot rollback - no transaction is active');
+          };
+        }
+        const value: unknown = Reflect.get(target, key);
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const sql = sqlFromDatabase(flaky);
+    await expect(sql.batch([{ query: 'INSERT INTO nope VALUES (1)' }])).rejects.toThrow(/nope/);
+    expect(real.isOpen).toBe(true);
+    await expect(sql.all('SELECT 1 AS n')).resolves.toEqual([{ n: 1 }]);
+    real.close();
+  });
+
+  it('names a closing-check failure so the request log can tell it apart', async () => {
+    const { sql } = memoryDatabase();
+    const failure = sql.batch([
+      { query: "INSERT INTO tenant_settings (tenant_id) VALUES ('t')" },
+      { query: "INSERT INTO event_delete_grant (tenant_id, scope) VALUES ('t', 'tenant')" },
+    ]);
+    await expect(failure).rejects.toBeInstanceOf(GrantCloseCheckError);
+    await expect(failure).rejects.toMatchObject({ name: 'GrantCloseCheckError' });
   });
 });

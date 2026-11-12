@@ -25,6 +25,22 @@ export function hasGrantCloser(db: DatabaseSync): boolean {
   );
 }
 
+/**
+ * The closing check stopped a batch: a grant was left open, or the closer itself is missing. The batch
+ * was rolled back. Named so the one-line request log identifies it; HTTP answers stay generic.
+ */
+export class GrantCloseCheckError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `closing check failed, batch rolled back (${cause instanceof Error ? cause.message : 'unknown'})`,
+      {
+        cause,
+      },
+    );
+    this.name = 'GrantCloseCheckError';
+  }
+}
+
 export class DatabaseIntegrityError extends Error {
   constructor(problem: string) {
     super(`refusing to use this database: ${problem}`);

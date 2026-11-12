@@ -5,7 +5,7 @@
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { GRANT_CLOSED_CHECK, hasGrantCloser } from './integrity.ts';
+import { GRANT_CLOSED_CHECK, GrantCloseCheckError, hasGrantCloser } from './integrity.ts';
 import type { Sql, SqlParam, Statement } from './sql.ts';
 
 function attempt<T>(fn: () => T): Promise<T> {
@@ -46,6 +46,31 @@ export function openDatabase(path: string): DatabaseSync {
   return db;
 }
 
+/** The connection was dropped after a rollback failed inside a transaction. Restart to recover. */
+export class DatabaseUnusableError extends Error {
+  constructor() {
+    super('database connection is unusable after a failed rollback');
+    this.name = 'DatabaseUnusableError';
+  }
+}
+
+/**
+ * Whether the connection is inside a transaction. `isTransaction` exists on every Node version the
+ * project supports (engines >= 22.18); the fallback probe is for anything older: BEGIN fails only when
+ * a transaction is already open, and a BEGIN that succeeds is undone at once.
+ */
+function inTransaction(db: DatabaseSync): boolean {
+  const flag: unknown = (db as { isTransaction?: unknown }).isTransaction;
+  if (typeof flag === 'boolean') return flag;
+  try {
+    db.exec('BEGIN');
+  } catch {
+    return true;
+  }
+  db.exec('ROLLBACK');
+  return false;
+}
+
 export function sqlFromDatabase(db: DatabaseSync): Sql {
   // Set when a rollback fails: the connection may still be inside a half-done transaction (with an
   // event delete grant visible to it), so it is closed and never used again. Restart to recover.
@@ -56,7 +81,7 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
   // first batch that removes it cannot skip it either.
   let closerSeen = hasGrantCloser(db);
   const usable = (): void => {
-    if (unusable) throw new Error('database connection is unusable after a failed rollback');
+    if (unusable) throw new DatabaseUnusableError();
   };
   return {
     all<T extends object>(query: string, params?: readonly SqlParam[]): Promise<T[]> {
@@ -78,7 +103,11 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
           // batch. Here, not in callers, so no batch can forget it. Skipped before migration 0003.
           if (closerSeen || hasGrantCloser(db)) {
             closerSeen = true;
-            db.prepare(GRANT_CLOSED_CHECK.query).run();
+            try {
+              db.prepare(GRANT_CLOSED_CHECK.query).run();
+            } catch (cause) {
+              throw new GrantCloseCheckError(cause);
+            }
           }
           db.exec('COMMIT');
           return changes;
@@ -86,13 +115,16 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
           try {
             db.exec('ROLLBACK');
           } catch {
-            // Keep the original error (the rollback failure would hide the cause), and drop the
-            // connection: closing it discards the open transaction.
-            unusable = true;
-            try {
-              db.close();
-            } catch {
-              /* already unusable */
+            // Keep the original error (the rollback failure would hide the cause). If the connection
+            // is still inside the transaction, drop it: closing discards the transaction. A rollback
+            // that failed because no transaction was left (SQLite ended it already) changes nothing.
+            if (inTransaction(db)) {
+              unusable = true;
+              try {
+                db.close();
+              } catch {
+                /* already unusable */
+              }
             }
           }
           throw error;
