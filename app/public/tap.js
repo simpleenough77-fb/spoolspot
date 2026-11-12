@@ -21,11 +21,16 @@ import {
 import {
   clipPlaceText,
   findNode,
+  heldInSlot,
+  heldState,
   insideRows,
+  isolatedText,
   leavesUnder,
   movedText,
+  name,
   pathTo,
   roomText,
+  suggestedLabel,
   suggestionCopy,
   takesClips,
   validView,
@@ -60,6 +65,28 @@ function el(tag, text, attrs = {}) {
   if (text) e.textContent = text;
   for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
   return e;
+}
+
+/** Parts (see tapview.js) as DOM nodes: plain words as text, every name in its own <bdi>. */
+function partNodes(parts) {
+  return parts.map((p) => {
+    if (typeof p === 'string') return document.createTextNode(p);
+    const b = document.createElement('bdi');
+    b.textContent = p.name;
+    return b;
+  });
+}
+
+/** An element whose content is a sentence of parts. */
+function sentence(tag, parts, attrs = {}) {
+  const e = el(tag, '', attrs);
+  e.replaceChildren(...partNodes(parts));
+  return e;
+}
+
+/** The status line (a live region), from parts. */
+function say(parts) {
+  status.replaceChildren(...partNodes(parts));
 }
 
 /** Clears the card. The place chooser stays as it is, so focus on it is never lost to a reload. */
@@ -99,7 +126,7 @@ function pathBlock(path, lead) {
   const intro = el('p', lead, { id, class: 'path-lead' });
   const list = el('ol', '', { class: 'path', 'aria-labelledby': id });
   path.forEach((p, i) => {
-    const li = el('li', p.name);
+    const li = sentence('li', [name(p.name)]);
     if (i === path.length - 1) li.setAttribute('aria-current', 'location');
     list.append(li);
   });
@@ -111,7 +138,10 @@ const TAG = { tag: true };
 let subject = TAG;
 let sequence = 0;
 
-async function show(next = subject) {
+let shownName = '';
+
+/** `quiet`: a choice from the place list; only the result is announced, not "Loading…". */
+async function show(next = subject, { quiet = false } = {}) {
   subject = next;
   sequence += 1;
   const mine = sequence;
@@ -120,7 +150,7 @@ async function show(next = subject) {
     neutral();
     return;
   }
-  status.textContent = 'Loading…';
+  if (!quiet) status.textContent = 'Loading…';
   let view = null;
   let nodes;
   // The held clip ranks a container's suggestion. It is sent for every tag alike, before the page
@@ -173,9 +203,11 @@ async function show(next = subject) {
       // Show the new state, then say where the clip is now (the refresh clears the status line).
       void show().then(() => {
         if (card.hidden) return;
-        status.textContent = result.moved
-          ? movedText(clipLabel(result.clip), pathTo(currentNodes, result.clip.location_id))
-          : 'It is already there. Nothing changed.';
+        say(
+          result.moved
+            ? movedText(clipLabel(result.clip), pathTo(currentNodes, result.clip.location_id))
+            : ['It is already there. Nothing changed.'],
+        );
         heading.focus();
       });
     },
@@ -192,27 +224,20 @@ async function show(next = subject) {
     return;
   }
   const where = view.location;
-  heading.textContent = where.name;
-  detail.textContent = roomText(where);
+  shownName = where.name;
+  heading.replaceChildren(...partNodes([name(where.name)]));
+  // The tree's node carries the clauses the tag answer leaves out (over by N, places without capacity).
+  detail.textContent = roomText(findNode(nodes, where.id) ?? where);
   body.replaceChildren(...pathBlock(pathTo(nodes, where.id), 'Where this is:'));
   if (view.kind === 'container') {
-    // From a tag, the held clip counts only when the API found it and ranked with it.
-    const holding = subject === TAG ? (view.held_clip_used ? held : null) : held;
-    showContainer(view, holding, subject !== TAG, mover);
+    showContainer(view, held, subject !== TAG, nodes, mover);
     return;
   }
   if (held) {
     moveHeld.hidden = false;
-    moveHeld.textContent = `Move ${held.label} here`;
+    moveHeld.replaceChildren(...partNodes(['Move ', name(held.label), ' here']));
     moveHeld.onclick = () => {
-      const still = heldClip();
-      if (!still) {
-        moveHeld.hidden = true;
-        status.textContent = 'The held clip timed out. Tap the clip again.';
-        return;
-      }
-      status.textContent = '';
-      mover.show(still, where.id);
+      choose(held.id, where.id, mover);
     };
   }
   await listClips(where.id, mover, mine);
@@ -220,61 +245,88 @@ async function show(next = subject) {
 
 let currentNodes = [];
 
+/**
+ * A Choose or "Move <clip> here" tap: opens the shared mover for the clip this view was drawn for. If
+ * the held clip changed since (another tab picked up another clip), the view is drawn again for the
+ * clip held now instead, so a suggestion is never applied to a different clip.
+ */
+function choose(drawnFor, placeId, mover) {
+  const now = heldClip();
+  const state = heldState(drawnFor, now);
+  if (state === 'gone') {
+    say(['The held clip timed out. Tap the clip again.']);
+    return;
+  }
+  if (state === 'changed') {
+    void show().then(() => {
+      if (card.hidden) return;
+      say([
+        'The held clip changed to ',
+        name(now.label),
+        '. The page now shows places for it; choose again.',
+      ]);
+      heading.focus();
+    });
+    return;
+  }
+  say([]);
+  mover.show(now, placeId);
+}
+
 function showClip(clip, nodes, mover) {
   const held = { id: clip.id, label: clipLabel(clip) };
-  heading.textContent = `Clip: ${held.label}`;
+  shownName = held.label;
+  heading.replaceChildren(...partNodes(['Clip: ', name(held.label)]));
   detail.textContent = `State: ${stateLabel(clip.state)}.`;
   const path = pathTo(nodes, clip.location_id);
   body.replaceChildren(
     el('h3', 'Where it belongs'),
-    el('p', clipPlaceText(path), { id: 'clip-place' }),
+    sentence('p', clipPlaceText(path), { id: 'clip-place' }),
     ...pathBlock(path, 'Where that is:'),
   );
   pickUp.hidden = false;
   pickUp.onclick = () => {
-    holdClip(held.id, held.label);
+    holdClip(held.id, held.label, clip.location_id);
     status.textContent = 'Held for ten minutes. Tap a place tag, or choose a place below.';
     mover.show(held, clip.location_id ?? undefined);
   };
 }
 
-function showContainer(view, held, browsed, mover) {
-  const copy = suggestionCopy(view, held, browsed);
-  const choose = (placeId) => {
-    const still = heldClip();
-    if (!still) {
-      status.textContent = 'The held clip timed out. Tap the clip again.';
-      return;
-    }
-    status.textContent = '';
-    mover.show(still, placeId);
-  };
+function showContainer(view, held, browsed, nodes, mover) {
+  const copy = suggestionCopy(view, held, { browsed, inSlot: heldInSlot(held, nodes) });
+  // The clip this view was drawn for; a tap checks it is still the one held.
+  const drawnFor = copy.canChoose && held ? held.id : null;
   const top = el('div', '', { id: 'suggestion', class: 'suggestion' });
-  top.append(el('h3', copy.heading), el('p', copy.text, { id: 'suggestion-text' }));
-  if (copy.targetId !== null && held) {
+  top.append(sentence('h3', copy.heading), sentence('p', copy.text, { id: 'suggestion-text' }));
+  if (copy.targetId !== null && copy.canChoose) {
     const target = copy.targetId;
-    const go = el('button', 'Choose this place', { type: 'button', id: 'suggestion-go' });
+    const targetName =
+      view.inside.find((p) => p.id === target)?.name ?? view.suggestion?.name ?? '';
+    const go = el('button', 'Choose this place', {
+      type: 'button',
+      id: 'suggestion-go',
+      'aria-label': isolatedText(suggestedLabel(targetName)),
+    });
     go.addEventListener('click', () => {
-      choose(target);
+      choose(drawnFor, target, mover);
     });
     top.append(go);
   }
   const list = el('ul', '', { id: 'inside-list', class: 'plain' });
-  for (const row of insideRows(view.inside, copy.targetId)) {
+  for (const row of insideRows(view.inside, copy.targetId, nodes)) {
     const li = el('li');
     if (row.suggested) li.className = 'suggested';
-    const text = el('span', row.text);
-    li.append(text);
+    li.append(sentence('span', row.text));
     if (row.suggested) li.append(el('span', 'Suggested', { class: 'badge' }));
     if (!takesClips(row.place)) {
       li.append(el('span', 'Printer slot', { class: 'badge' }));
-    } else if (held) {
+    } else if (copy.canChoose) {
       const button = el('button', 'Choose', {
         type: 'button',
-        'aria-label': `Choose ${row.place.name}`,
+        'aria-label': isolatedText(row.label),
       });
       button.addEventListener('click', () => {
-        choose(row.place.id);
+        choose(drawnFor, row.place.id, mover);
       });
       li.append(button);
     }
@@ -291,15 +343,14 @@ async function listClips(locationId, mover, mine) {
     clipList.replaceChildren();
     for (const c of clips) {
       const li = document.createElement('li');
-      const text = document.createElement('span');
-      text.textContent = `${clipLabel(c)} (${stateLabel(c.state)})`;
+      const text = sentence('span', [name(clipLabel(c)), ` (${stateLabel(c.state)})`]);
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = 'Move';
-      button.setAttribute('aria-label', `Move ${clipLabel(c)}`);
+      button.setAttribute('aria-label', isolatedText(['Move ', name(clipLabel(c))]));
       button.addEventListener('click', () => {
         const clip = { id: c.id, label: clipLabel(c) };
-        holdClip(clip.id, clip.label);
+        holdClip(clip.id, clip.label, locationId);
         status.textContent = 'Held for ten minutes. Choose where it goes below.';
         mover.show(clip, locationId);
       });
@@ -319,13 +370,19 @@ async function listClips(locationId, mover, mine) {
   }
 }
 
-/** The non-NFC way to the same views: every place in tree order, chosen with a tap. */
+/**
+ * The non-NFC way to the same views: every place in tree order, chosen with a tap. Indented with
+ * no-break spaces (ordinary spaces collapse), and a container says it means everything inside, as on
+ * the main page's placement picker. Option text cannot hold a <bdi>, so the path is isolated with
+ * bidi isolate characters instead.
+ */
 function fillBrowse(nodes) {
   const chosen = subject === TAG ? '' : subject.place;
   const first = el('option', 'Choose a place', { value: '' });
   browsePlace.replaceChildren(first);
   for (const p of pickerNodes(nodes)) {
-    const option = el('option', '  '.repeat(p.depth) + p.label, { value: p.id });
+    const text = isolatedText(p.leaf ? [name(p.label)] : [name(p.label), ' (anywhere inside)']);
+    const option = el('option', '\u00a0\u00a0'.repeat(p.depth) + text, { value: p.id });
     browsePlace.append(option);
   }
   browsePlace.value = chosen;
@@ -334,9 +391,10 @@ function fillBrowse(nodes) {
 
 browsePlace.addEventListener('change', () => {
   const id = browsePlace.value;
-  // Focus stays on the list; the status line says what is shown.
-  void show(id === '' ? TAG : { place: id }).then(() => {
-    if (!card.hidden && id !== '') status.textContent = `Showing ${heading.textContent}.`;
+  // Focus stays on the list; the status line says only what is shown (no "Loading…" on each choice).
+  // This runs on `change`, not `input`.
+  void show(id === '' ? TAG : { place: id }, { quiet: true }).then(() => {
+    if (!card.hidden && id !== '') say(['Showing ', name(shownName), '.']);
   });
 });
 
