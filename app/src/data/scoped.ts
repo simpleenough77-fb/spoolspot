@@ -186,13 +186,15 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     );
     const clip = clips[0];
     if (!clip) return null;
+    // The held clip's own row is not filtered out: the only place it adds is the clip's own, which
+    // `exclude` below already keeps out of every suggestion.
     const same = await sql.all<{ location_id: string }>(
       `SELECT s.location_id FROM stock_line s
         WHERE s.tenant_id = ? AND s.filament_id = ? AND s.count > 0
        UNION
        SELECT k.location_id FROM clip k
-        WHERE k.tenant_id = ? AND k.filament_id = ? AND k.id <> ? AND k.location_id IS NOT NULL`,
-      [tenantId, clip.filament_id, tenantId, clip.filament_id, clipId],
+        WHERE k.tenant_id = ? AND k.filament_id = ? AND k.location_id IS NOT NULL`,
+      [tenantId, clip.filament_id, tenantId, clip.filament_id],
     );
     const preferred = await sql.all<{ id: string }>(
       `SELECT id FROM location

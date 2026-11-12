@@ -177,7 +177,7 @@ describe('container tags (SPOOL-191)', () => {
       reason: 'manufacturer_preference',
     });
 
-    // The held clip itself does not count as "same filament here", and its own place is not offered.
+    // The held clip's own place is never offered, even when it has the most room.
     db.prepare(
       "UPDATE location SET prefers_manufacturer = NULL WHERE tenant_id = ? AND id = 'loc3.shelf-3'",
     ).run(TENANT_A);
