@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, expect, it } from 'vitest';
 import { createScopedData } from './scoped.ts';
-import { isTagConflict, newTagId, normalizeTagId, withFreshTag } from './tags.ts';
+import {
+  isRetiredTagRefusal,
+  isTagConflict,
+  newTagId,
+  normalizeTagId,
+  withFreshTag,
+} from './tags.ts';
 import { ForbiddenError, Scope, type Principal } from '../auth/principal.ts';
 import { memoryDatabase, TENANT_A, TENANT_B, uuid } from '../testing.ts';
 
@@ -174,5 +180,25 @@ describe('resolveTag', () => {
     await expect(createScopedData(sql, none).resolveTag(TAG)).rejects.toBeInstanceOf(
       ForbiddenError,
     );
+  });
+});
+
+describe('isRetiredTagRefusal (SPOOL-201)', () => {
+  it("matches only the retirement trigger's message, never another refusal", () => {
+    expect(isRetiredTagRefusal(new Error('tag id retired'))).toBe(true);
+    // D1 prefixes the message.
+    expect(isRetiredTagRefusal(new Error('D1_ERROR: tag id retired: SQLITE_CONSTRAINT'))).toBe(
+      true,
+    );
+    for (const other of [
+      'retired tag ids cannot be changed',
+      'retired tag ids are removed only with their tenant',
+      'a container stays a container',
+      'UNIQUE constraint failed: tag.tenant_id, tag.tag_id',
+      'tag id retiredX',
+    ]) {
+      expect(isRetiredTagRefusal(new Error(other)), other).toBe(false);
+    }
+    expect(isRetiredTagRefusal('tag id retired')).toBe(false);
   });
 });

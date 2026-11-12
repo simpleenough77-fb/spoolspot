@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPOOL-201, migration 0006: a tag ID that stops being the tag of its place or clip is retired for good
 // in its tenant, enforced by the database; a leaf that becomes a container keeps its tag (D4).
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { deleteTenant } from '../data/tenant-delete.ts';
 import { fillDemo, removeDemo } from '../seed/demo.ts';
@@ -17,7 +19,7 @@ import {
   uuid,
 } from '../testing.ts';
 import { DatabaseIntegrityError, TAG_RETIREMENT_TRIGGERS, verifyDatabase } from './integrity.ts';
-import { runMigrations } from './migrate.ts';
+import { MIGRATIONS_DIR, runMigrations } from './migrate.ts';
 
 type Db = ReturnType<typeof memoryDatabase>['db'];
 
@@ -640,9 +642,124 @@ describe('migration 0006: demo IDs and existing databases', () => {
   });
 });
 
+describe('migration 0006: review round 1 (each test pins one trigger detail)', () => {
+  const twoTenants = () => {
+    const { db } = memoryDatabase();
+    tenant(db, TENANT_A);
+    tenant(db, TENANT_B);
+    return db;
+  };
+  const moveTagRow = (db: Db, tag: string) =>
+    db
+      .prepare('UPDATE tag SET tenant_id = ? WHERE tenant_id = ? AND tag_id = ?')
+      .run(TENANT_B, TENANT_A, tag);
+
+  it('a registry row moved to another tenant is refused when the ID is retired there (tenant_id, not only tag_id)', () => {
+    const db = twoTenants();
+    shelf(db, TENANT_B, 'one', X);
+    setLeafTag(db, TENANT_B, 'one', null);
+    container(db, TENANT_A, 'box');
+    containerTag(db, TENANT_A, 'box', X);
+    expect(() => moveTagRow(db, X)).toThrow(RETIRED);
+    expect(registry(db, TENANT_A)).toEqual([{ tag_id: X, kind: 'location', target_id: 'box' }]);
+  });
+
+  it('a registry row moved to another tenant retires the ID in the old tenant, not the new', () => {
+    const db = twoTenants();
+    container(db, TENANT_A, 'box');
+    containerTag(db, TENANT_A, 'box', X);
+    moveTagRow(db, X);
+    expect(retired(db, TENANT_A)).toEqual([X]);
+    expect(retired(db, TENANT_B)).toEqual([]);
+    expect(registry(db, TENANT_B)).toEqual([{ tag_id: X, kind: 'location', target_id: 'box' }]);
+  });
+
+  it('retired rows stay while the tenant has clips but no places or registry rows', () => {
+    const db = twoTenants();
+    clip(db, TENANT_A, X);
+    // A direct registry delete retires X and leaves the clip without a registry row.
+    db.prepare('DELETE FROM tag WHERE tenant_id = ?').run(TENANT_A);
+    expect(retired(db, TENANT_A)).toEqual([X]);
+    expect(() => db.prepare('DELETE FROM tag_retired WHERE tenant_id = ?').run(TENANT_A)).toThrow(
+      /only with their tenant/,
+    );
+  });
+
+  it('retired rows stay while the tenant has registry rows but no places or clips', () => {
+    const db = twoTenants();
+    containerTag(db, TENANT_A, 'nowhere', X);
+    containerTag(db, TENANT_A, 'gone', Y);
+    db.prepare('DELETE FROM tag WHERE tenant_id = ? AND tag_id = ?').run(TENANT_A, Y);
+    expect(retired(db, TENANT_A)).toEqual([Y]);
+    expect(() => db.prepare('DELETE FROM tag_retired WHERE tenant_id = ?').run(TENANT_A)).toThrow(
+      /only with their tenant/,
+    );
+  });
+
+  it('a clip or place whose tenant and id change in one statement leaves no row in the old tenant', () => {
+    const db = twoTenants();
+    const f = filament(db, TENANT_A);
+    db.prepare(
+      "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'M', 'PLA', ?, 'disposable')",
+    ).run(TENANT_B, f, f);
+    const c = clip(db, TENANT_A, X, f);
+    const moved = uuid();
+    db.prepare('UPDATE clip SET tenant_id = ?, id = ? WHERE tenant_id = ? AND id = ?').run(
+      TENANT_B,
+      moved,
+      TENANT_A,
+      c,
+    );
+    shelf(db, TENANT_A, 'one', Y);
+    db.prepare(
+      "UPDATE location SET tenant_id = ?, id = 'uno' WHERE tenant_id = ? AND id = 'one'",
+    ).run(TENANT_B, TENANT_A);
+    expect(registry(db, TENANT_A)).toEqual([]);
+    expect(retired(db, TENANT_A)).toEqual([X, Y]);
+    expect(registry(db, TENANT_B)).toEqual([
+      { tag_id: X, kind: 'clip', target_id: moved },
+      { tag_id: Y, kind: 'location', target_id: 'uno' },
+    ]);
+  });
+
+  it("replacing a container's demo tag does not retire it", () => {
+    const db = twoTenants();
+    container(db, TENANT_A, 'box');
+    containerTag(db, TENANT_A, 'box', 'DEM100000009');
+    db.prepare(
+      "UPDATE tag SET tag_id = ? WHERE tenant_id = ? AND kind = 'location' AND target_id = 'box'",
+    ).run(X, TENANT_A);
+    expect(retired(db, TENANT_A)).toEqual([]);
+  });
+
+  it('only DEM0 and DEM1 are exempt: DEM2 and eight digits is retired, on delete and on update', () => {
+    const db = twoTenants();
+    shelf(db, TENANT_A, 'one', 'DEM200000001');
+    setLeafTag(db, TENANT_A, 'one', null);
+    container(db, TENANT_A, 'box');
+    containerTag(db, TENANT_A, 'box', 'DEM200000002');
+    db.prepare(
+      "UPDATE tag SET tag_id = ? WHERE tenant_id = ? AND kind = 'location' AND target_id = 'box'",
+    ).run(X, TENANT_A);
+    expect(retired(db, TENANT_A)).toEqual(['DEM200000001', 'DEM200000002']);
+  });
+});
+
 describe('verifyDatabase: the retirement triggers are checked at startup', () => {
+  /** The triggers 0006 creates, read from the migration itself, so the list cannot check itself. */
+  const fromMigration = [
+    ...readFileSync(join(MIGRATIONS_DIR, '0006_retired_tag_ids.sql'), 'utf8').matchAll(
+      /^CREATE TRIGGER (\w+)$/gm,
+    ),
+  ].map((m) => m[1] ?? '');
+
+  it('names every trigger 0006 creates or recreates', () => {
+    expect(fromMigration).toHaveLength(8);
+    expect(new Set(fromMigration)).toEqual(new Set(TAG_RETIREMENT_TRIGGERS));
+  });
+
   it('refuses a database missing any of them', () => {
-    for (const trigger of TAG_RETIREMENT_TRIGGERS) {
+    for (const trigger of fromMigration) {
       const { db } = memoryDatabase();
       db.exec(`DROP TRIGGER ${trigger}`);
       expect(() => {
