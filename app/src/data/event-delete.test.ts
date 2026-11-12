@@ -400,6 +400,23 @@ describe('the closing check does not depend on pragmas (review round 1)', () => 
     expect(() => runMigrations(db)).toThrow(/grant was left open/);
   });
 
+  it('refuses a database whose event log triggers are missing (a partly applied migration)', () => {
+    for (const trigger of [
+      'event_is_append_only_update',
+      'event_is_append_only_delete',
+      'event_insert_is_new',
+      'event_delete_grant_left_open',
+      'event_delete_grant_is_not_updated',
+    ]) {
+      const { db } = memoryDatabase();
+      db.exec(`DROP TRIGGER ${trigger}`);
+      expect(() => {
+        verifyDatabase(db);
+      }, trigger).toThrow(DatabaseIntegrityError);
+      expect(() => runMigrations(db), trigger).toThrow(/refusing to use this database/);
+    }
+  });
+
   it('accepts a clean database', () => {
     const { db } = memoryDatabase();
     expect(() => {

@@ -39,17 +39,31 @@ function exists(db: DatabaseSync, type: 'table' | 'trigger', name: string): bool
 }
 
 /**
- * Throws DatabaseIntegrityError when the database is not safe to serve: foreign keys off, or an event
- * delete grant left behind (a grant may only exist inside the batch that opened it). Run after
- * migrations, before anything else uses the database.
+ * Throws DatabaseIntegrityError when the database is not safe to serve: foreign keys off, an event log
+ * trigger missing, or an event delete grant left behind (a grant may only exist inside the batch that
+ * opened it). Run after migrations, before anything else uses the database.
  */
 export function verifyDatabase(db: DatabaseSync): void {
   const fk = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number } | undefined;
   if (fk?.foreign_keys !== 1) throw new DatabaseIntegrityError('foreign keys are not enforced');
+  // The triggers that keep the event log append-only. A store that does not apply a migration file in
+  // one transaction could be left with a table and without its triggers; refuse that.
+  const required = exists(db, 'table', 'event')
+    ? ['event_is_append_only_update', 'event_is_append_only_delete']
+    : [];
   if (exists(db, 'table', 'event_delete_grant')) {
-    if (!exists(db, 'trigger', 'event_delete_grant_left_open')) {
-      throw new DatabaseIntegrityError('the event delete grant closer is missing');
+    required.push(
+      'event_insert_is_new',
+      'event_delete_grant_left_open',
+      'event_delete_grant_is_not_updated',
+    );
+  }
+  for (const trigger of required) {
+    if (!exists(db, 'trigger', trigger)) {
+      throw new DatabaseIntegrityError(`the event log trigger ${trigger} is missing`);
     }
+  }
+  if (exists(db, 'table', 'event_delete_grant')) {
     const open = db.prepare('SELECT COUNT(*) AS n FROM event_delete_grant').get() as { n: number };
     if (open.n > 0) {
       throw new DatabaseIntegrityError(
