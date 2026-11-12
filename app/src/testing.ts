@@ -18,21 +18,26 @@ export function memoryDatabase(): { db: DatabaseSync; sql: Sql } {
   return { db, sql: sqlFromDatabase(db) };
 }
 
-/**
- * An in-memory database migrated only up to and including `last` (a migration file name), so a test can
- * write rows the way an older database held them and then call runMigrations(db) for the rest.
- */
-export function memoryDatabaseUpTo(last: string): { db: DatabaseSync; sql: Sql } {
+/** Applies only the migrations up to and including `last` (a migration file name) to `db`. */
+export function migrateUpTo(db: DatabaseSync, last: string): void {
   const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql') && f <= last);
   if (!files.includes(last)) throw new Error(`no migration named ${last}`);
   const dir = mkdtempSync(join(tmpdir(), 'spoolspot-mig-'));
-  const db = openDatabase(':memory:');
   try {
     for (const f of files) copyFileSync(join(MIGRATIONS_DIR, f), join(dir, f));
     runMigrations(db, dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * An in-memory database migrated only up to and including `last` (a migration file name), so a test can
+ * write rows the way an older database held them and then call runMigrations(db) for the rest.
+ */
+export function memoryDatabaseUpTo(last: string): { db: DatabaseSync; sql: Sql } {
+  const db = openDatabase(':memory:');
+  migrateUpTo(db, last);
   return { db, sql: sqlFromDatabase(db) };
 }
 
