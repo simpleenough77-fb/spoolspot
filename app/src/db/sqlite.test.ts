@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { memoryDatabase } from '../testing.ts';
 import { MIGRATIONS_DIR, runMigrations } from './migrate.ts';
 import { GrantCloseCheckError } from './integrity.ts';
-import { DatabaseUnusableError, openDatabase, sqlFromDatabase } from './sqlite.ts';
+import { DatabaseUnusableError, describeCause, openDatabase, sqlFromDatabase } from './sqlite.ts';
+import { StatementNotAllowedError } from './statement-guard.ts';
 
 describe('sql adapter', () => {
   it('refuses a statement that binds more than 100 parameters (D1 limit)', async () => {
@@ -49,7 +50,14 @@ describe('sql adapter', () => {
             : value;
         },
       });
-      const sql = sqlFromDatabase(broken);
+      let unusableCalls = 0;
+      let cause: unknown;
+      const sql = sqlFromDatabase(broken, {
+        onUnusable: (error) => {
+          unusableCalls += 1;
+          cause = error;
+        },
+      });
       await expect(
         sql.batch([
           { query: "INSERT INTO tenant_settings (tenant_id) VALUES ('half-done')" },
@@ -59,6 +67,10 @@ describe('sql adapter', () => {
       await expect(sql.all('SELECT 1 AS n')).rejects.toBeInstanceOf(DatabaseUnusableError);
       await expect(sql.batch([{ query: 'SELECT 1' }])).rejects.toThrow(/unusable/);
       expect(real.isOpen).toBe(false);
+      // Told once, when the connection was dropped (the server exits there, SPOOL-199).
+      expect(unusableCalls).toBe(1);
+      // With the error that started it (the failed INSERT), not the rollback failure.
+      expect(describeCause(cause)).toBe('cause Error, code ERR_SQLITE_ERROR, errcode 1');
       const again = openDatabase(path);
       expect(again.prepare('SELECT COUNT(*) AS n FROM tenant_settings').get()).toMatchObject({
         n: 0,
@@ -104,9 +116,11 @@ describe('sql adapter', () => {
           : value;
       },
     });
-    const sql = sqlFromDatabase(flaky);
+    let unusableCalls = 0;
+    const sql = sqlFromDatabase(flaky, { onUnusable: () => (unusableCalls += 1) });
     await expect(sql.batch([{ query: 'INSERT INTO nope VALUES (1)' }])).rejects.toThrow(/nope/);
     expect(real.isOpen).toBe(true);
+    expect(unusableCalls).toBe(0);
     await expect(sql.all('SELECT 1 AS n')).resolves.toEqual([{ n: 1 }]);
     real.close();
   });
@@ -138,5 +152,90 @@ describe('sql adapter', () => {
         guard,
       ]),
     ).toEqual([1, 0]);
+  });
+
+  it('checks every statement of a batch before it starts: a refused batch runs nothing (SPOOL-199)', async () => {
+    const { sql, db } = memoryDatabase();
+    const ran: string[] = [];
+    const watched = new Proxy(db, {
+      get(target, key) {
+        if (key === 'exec' || key === 'prepare') {
+          return (text: string) => {
+            ran.push(text);
+            if (key === 'exec') {
+              target.exec(text);
+              return undefined;
+            }
+            return target.prepare(text);
+          };
+        }
+        const value: unknown = Reflect.get(target, key);
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const guarded = sqlFromDatabase(watched);
+    ran.length = 0;
+    await expect(
+      guarded.batch([
+        { query: "INSERT INTO tenant_settings (tenant_id) VALUES ('first')" },
+        { query: 'PRAGMA foreign_keys = OFF' },
+      ]),
+    ).rejects.toBeInstanceOf(StatementNotAllowedError);
+    await expect(guarded.all('PRAGMA foreign_keys = OFF')).rejects.toBeInstanceOf(
+      StatementNotAllowedError,
+    );
+    // Nothing reached the connection: no BEGIN, no INSERT, no pragma.
+    expect(ran).toEqual([]);
+    expect(db.isTransaction).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM tenant_settings').get()).toMatchObject({ n: 0 });
+    // The connection stays usable for allowed statements.
+    await expect(
+      sql.batch([{ query: "INSERT INTO tenant_settings (tenant_id) VALUES ('ok')" }]),
+    ).resolves.toEqual([1]);
+    await expect(sql.all('SELECT tenant_id FROM tenant_settings')).resolves.toEqual([
+      { tenant_id: 'ok' },
+    ]);
+  });
+
+  it('runs every statement the application sends: reads through all(), writes through batch()', async () => {
+    // The shapes in use today (SPOOL-199 inventory): upserts, INSERT ... SELECT with a guard,
+    // UPDATE and DELETE keyed to a tenant, and the changes() guard of the tag claim.
+    const { sql } = memoryDatabase();
+    expect(
+      await sql.batch([
+        {
+          query:
+            "INSERT INTO tenant_settings (tenant_id) VALUES ('t') ON CONFLICT (tenant_id) DO NOTHING",
+        },
+        { query: "UPDATE tenant_settings SET moderate_threshold = 2 WHERE tenant_id = 't'" },
+        {
+          query:
+            'INSERT INTO tag (tenant_id, tag_id, kind, target_id) SELECT NULL, NULL, NULL, NULL WHERE changes() > 1',
+        },
+        { query: "DELETE FROM stock_line WHERE tenant_id = 't'" },
+      ]),
+    ).toEqual([1, 1, 0, 0]);
+    await expect(
+      sql.all('WITH s AS (SELECT tenant_id FROM tenant_settings) SELECT COUNT(*) AS n FROM s'),
+    ).resolves.toEqual([{ n: 1 }]);
+  });
+
+  it('describes a cause by class and SQLite codes only, never its message', () => {
+    const sqliteError = Object.assign(
+      new Error("UNIQUE constraint failed: tag.tag_id 'ABCDEFGHJKMN' INSERT INTO tag"),
+      { code: 'ERR_SQLITE_ERROR', errcode: 2067 },
+    );
+    const line = describeCause(sqliteError);
+    expect(line).toBe('cause Error, code ERR_SQLITE_ERROR, errcode 2067');
+    expect(line).not.toMatch(/UNIQUE|ABCDEFGHJKMN|INSERT|tag/);
+    class OddError extends Error {
+      override name = 'Odd name; DROP TABLE x';
+    }
+    expect(
+      describeCause(Object.assign(new OddError('x'), { code: 'not safe; x', errcode: 1.5 })),
+    ).toBe('cause Error');
+    expect(describeCause('a string with SELECT 1')).toBe('cause unknown');
   });
 });

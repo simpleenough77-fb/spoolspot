@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { GRANT_CLOSED_CHECK, GrantCloseCheckError, hasGrantCloser } from './integrity.ts';
 import type { Sql, SqlParam, Statement } from './sql.ts';
+import { assertData, assertRead } from './statement-guard.ts';
 
 function attempt<T>(fn: () => T): Promise<T> {
   try {
@@ -92,7 +93,39 @@ function inTransaction(db: DatabaseSync): boolean {
   return false;
 }
 
-export function sqlFromDatabase(db: DatabaseSync): Sql {
+export interface SqlOptions {
+  /**
+   * Called once, right after the connection was closed because a rollback failed inside a
+   * transaction, with the error that started it. The server exits here so its supervisor restarts it
+   * and the startup check runs again (SPOOL-199); scripts leave it unset and fail with the original
+   * error. Log it only through describeCause: its message may carry SQL text or values.
+   */
+  readonly onUnusable?: (cause: unknown) => void;
+}
+
+const SAFE_TOKEN = /^[A-Za-z0-9_]{1,64}$/;
+
+/**
+ * The class name and SQLite error codes of an error, for a one-line log: never its message, SQL text
+ * or values. node:sqlite sets `code` (ERR_SQLITE_ERROR) and `errcode` (the SQLite result code).
+ */
+export function describeCause(cause: unknown): string {
+  if (!(cause instanceof Error)) return 'cause unknown';
+  const { code, errcode } = cause as { code?: unknown; errcode?: unknown };
+  const parts = [`cause ${SAFE_TOKEN.test(cause.name) ? cause.name : 'Error'}`];
+  if (typeof code === 'string' && SAFE_TOKEN.test(code)) parts.push(`code ${code}`);
+  if (typeof errcode === 'number' && Number.isInteger(errcode)) {
+    parts.push(`errcode ${String(errcode)}`);
+  }
+  return parts.join(', ');
+}
+
+/**
+ * The application's database surface. Only data statements pass (statement-guard.ts): `all()` runs
+ * reads, `batch()` runs INSERT, UPDATE, DELETE, SELECT and WITH. Migrations and the adapter's own
+ * transaction control use the database handle directly.
+ */
+export function sqlFromDatabase(db: DatabaseSync, options: SqlOptions = {}): Sql {
   // Set when a rollback fails: the connection may still be inside a half-done transaction (with an
   // event delete grant visible to it), so it is closed and never used again. Restart to recover.
   let unusable = false;
@@ -108,12 +141,15 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
     all<T extends object>(query: string, params?: readonly SqlParam[]): Promise<T[]> {
       return attempt(() => {
         usable();
+        assertRead(query);
         return db.prepare(query).all(...bind(params)) as T[];
       });
     },
     batch(statements: readonly Statement[]): Promise<number[]> {
       return attempt(() => {
         usable();
+        // Every statement is checked before the transaction starts: a refused batch runs nothing.
+        for (const s of statements) assertData(s.query);
         db.exec('BEGIN IMMEDIATE');
         try {
           const changes: number[] = [];
@@ -146,6 +182,7 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
               } catch {
                 /* already unusable */
               }
+              options.onUnusable?.(error);
             }
           }
           throw error;
