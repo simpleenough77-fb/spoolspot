@@ -235,6 +235,43 @@ describe('a grant is tenant-specific and scoped', () => {
     expect(events(db, TENANT_B)).toBe(2);
   });
 
+  it('a filament grant matches by the event filament alone and by the clip alone', async () => {
+    const { db, sql, a } = await setup();
+    const add = db.prepare(
+      "INSERT INTO event (tenant_id, id, type, clip_id, filament_id) VALUES (?, ?, 'open', ?, ?)",
+    );
+    const byFilament = uuid();
+    const byClip = uuid();
+    add.run(TENANT_A, byFilament, null, a.red); // needs the filament branch of the trigger
+    add.run(TENANT_A, byClip, a.redClip, null); // needs the clip branch of the trigger
+    await sql.batch(guardedEventDelete(TENANT_A, { scope: 'filament', filamentId: a.red }));
+    const left = (
+      db.prepare('SELECT id FROM event WHERE tenant_id = ?').all(TENANT_A) as {
+        id: string;
+      }[]
+    ).map((r) => r.id);
+    expect(left).not.toContain(byFilament);
+    expect(left).not.toContain(byClip);
+    expect(left).toHaveLength(1); // the blue clip's move
+  });
+
+  it('a filament delete stays in its tenant when another tenant reuses the same ids', async () => {
+    const { db, sql, a } = await setup();
+    // Ids are unique per tenant only: tenant B may hold a filament and a clip with A's ids.
+    db.prepare(
+      "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'Other', 'PETG', 'Grey', 'disposable')",
+    ).run(TENANT_B, a.red);
+    db.prepare(
+      "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, 'loc1.shelf-1', 'free')",
+    ).run(TENANT_B, a.redClip, newTagId(), a.red);
+    db.prepare(
+      "INSERT INTO event (tenant_id, id, type, clip_id, filament_id) VALUES (?, ?, 'open', ?, ?)",
+    ).run(TENANT_B, uuid(), a.redClip, a.red);
+    await sql.batch(guardedEventDelete(TENANT_A, { scope: 'filament', filamentId: a.red }));
+    expect(events(db, TENANT_A)).toBe(1);
+    expect(events(db, TENANT_B)).toBe(3);
+  });
+
   it("a filament grant cannot name another tenant's filament", async () => {
     const { db, sql, b } = await setup();
     await expect(
