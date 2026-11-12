@@ -13,5 +13,6 @@ Decisions are recorded as ADR pages in the project's Confluence space (the canon
 | 0007 | [Security, privacy and accessibility baseline](https://simpleenough77.atlassian.net/wiki/spaces/SpoolSpot/pages/688130)            | Accepted |
 | 0008 | [Relationship to Spoolman: standalone](https://simpleenough77.atlassian.net/wiki/spaces/SpoolSpot/pages/753681)                    | Accepted |
 | 0009 | [NFC tag write protection](https://simpleenough77.atlassian.net/wiki/spaces/SpoolSpot/pages/720897)                                | Accepted |
+| 0015 | Assistant merge rule (supersedes ADR-0014)                                                                                         | Accepted |
 
-Contributor-relevant outcomes: AGPL-3.0-or-later code, CC0-1.0 data and schemas, CC BY 4.0 docs, DCO sign-off; TypeScript on Node 24 LTS (Node 22 also tested); ASVS 5.0.0 Level 2 and WCAG 2.2 AA as baselines; standalone codebase (no Spoolman code or data).
+Contributor-relevant outcomes: AGPL-3.0-or-later code, CC0-1.0 data and schemas, CC BY 4.0 docs, DCO sign-off; TypeScript on Node 24 LTS (Node 22 also tested); ASVS 5.0.0 Level 2 and WCAG 2.2 AA as baselines; standalone codebase (no Spoolman code or data); the project's AI assistant may merge dependency-related pull requests, and other pull requests that pass all tests and open no new attack surface, while everything else goes to the maintainer (ADR-0015).
