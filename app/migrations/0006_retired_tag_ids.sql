@@ -2,9 +2,10 @@
 -- SPOOL-201, owner decisions 2026-11-12: a tag ID that stops being the tag of its place or clip is
 -- retired for good in its tenant, and a leaf that becomes a container keeps its tag.
 --
--- 1. Retired IDs. tag_retired holds, per tenant, every tag ID that has left the registry. The rule is
--- kept on the registry itself, so it covers every writer: the 0002 and 0005 triggers on location and
--- clip, the claim path (which writes the registry directly for containers) and any direct write.
+-- 1. Retired IDs. tag_retired holds, per tenant, every tag ID that has left the registry, except the
+-- demo IDs and the REPLACE writes described below. The rule is kept on the registry itself, so it
+-- covers every writer: the 0002 and 0006 triggers on location and clip, the claim path (which writes
+-- the registry directly for containers) and any direct write.
 --   * A registry row deleted retires its ID: a leaf's tag_id cleared or changed, a clip's tag_id
 --     changed, a location or clip deleted (its tag may still exist in the world), a tenant_id change
 --     of a location or clip (retired in the old tenant), and a direct DELETE on tag.
@@ -16,9 +17,12 @@
 --     the 0002/0005 triggers, so they are refused the same way and the whole statement rolls back.
 --   * Following the place (owner decision D3) is not retiring: a move changes no tag, a rename
 --     re-points the registry row (below), and the ID stays in use by the same record.
---   * Exempt: the fixed public demo IDs (DEM0 or DEM1 followed by eight digits; app/src/seed/demo.ts).
---     The claim path never accepts them for a real record (isReservedTagId), and demo removal followed
---     by a fresh fill must be able to put them back, so they are never retired.
+--   * Exempt: every ID of the fixed demo form, DEM0 or DEM1 followed by eight digits (the public demo
+--     IDs of app/src/seed/demo.ts). Demo removal followed by a fresh fill must be able to put them back,
+--     so an ID of that form is never retired, whatever record held it. The claim path refuses the
+--     reserved demo prefixes for a real record (isReservedTagId), but the seed import and the tag ID
+--     generator (newTagId) do not, so a real record could in principle carry an ID of the demo form
+--     and it would not be retired (follow-up ticket).
 --   * Per tenant, like the registry: tag IDs are unique per tenant (0001 and 0002), not globally, so
 --     another tenant could always hold the same ID, and a tenant's retired IDs neither block nor show
 --     in any other tenant. Every statement below is bound to the row's own tenant.
@@ -27,8 +31,9 @@
 --     everything of the tenant. A tenant recreated under the same id afterwards starts with no retired IDs.
 --
 -- 2. A leaf that becomes a container keeps its tag (owner decision D4). 0001 makes a container's
--- tag_id NULL, so the change clears the column; until now 0002's trigger (kept by 0005) then dropped
--- the registry row and freed the ID. location_tag_update is recreated below, same name, so that the
+-- tag_id NULL, so the change clears the column; until now location_tag_update (0002's rule, kept in
+-- 0005's version) then dropped the registry row and freed the ID. The keep applies only when the
+-- change is one statement; clearing tag_id first and changing the type afterwards retires the ID. location_tag_update is recreated below, same name, so that the
 -- row stays as the container's registry-only tag. The ID is not retired: the same place still has it.
 --
 -- What changed in location_tag_update (0005's body otherwise; same name, columns and WHEN):
@@ -52,12 +57,21 @@
 -- constraint conflicts, but RAISE(ABORT) is not a constraint conflict: under either clause a retired ID
 -- is still refused and the statement rolls back. The retiring inserts below cannot meet a constraint
 -- (the ID came from the registry with the same CHECK, and an existing retired row is skipped by NOT
--- EXISTS), so OR IGNORE cannot skip them either. OR IGNORE can still skip 0005's re-point on a rename
--- (0005 says renames with it are not supported); here the row is then deleted and its ID retired, not
--- freed. Not covered: a REPLACE write (the REPLACE statement or the OR REPLACE clause) on location,
--- clip or tag removes the conflicting row without running delete triggers while recursive_triggers is
--- off (the SQLite default), so that row's ID is neither retired nor kept. The SQL adapter refuses every
--- REPLACE write (SPOOL-199), and a database-level guard is separate work (SPOOL-206).
+-- EXISTS), so OR IGNORE cannot skip them either. Renames with OR IGNORE remain unsupported (as 0005
+-- says): when the new id already has a registry row of its own (an orphan row, which only a REPLACE
+-- write or a direct write to tag can leave), the re-point conflicts and is skipped, the delete spares
+-- the row (it is a kept row), and the row stays pointing at the old id: it is neither re-pointed,
+-- deleted nor retired. For a leaf the insert for the new id is skipped as well, so the leaf's column
+-- tag is left with a registry row under its old id. No ID is freed by this.
+-- Not covered: a REPLACE write (the REPLACE statement or the OR REPLACE clause). It removes a
+-- conflicting row without running delete triggers while recursive_triggers is off (the SQLite default),
+-- and the triggers' own writes inherit the clause. So a REPLACE on tag, or on location or clip through
+-- these triggers, can remove a registry row without retiring it, which frees its ID (for example, a
+-- REPLACE write that puts a location row with a new tag_id in place of the old row frees the place's
+-- old tag), and a replaced location or clip row can leave its registry row behind as an orphan. A
+-- retired ID is still refused under REPLACE: the refusal is a RAISE(ABORT) in a BEFORE trigger. The SQL
+-- adapter refuses every REPLACE write (SPOOL-199), and a database-level guard is separate work
+-- (SPOOL-206).
 --
 -- Existing data: additive only. No existing row is changed or deleted; tag_retired starts empty. IDs
 -- dropped before this migration ran are unknown (nothing recorded them) and cannot be retired
