@@ -200,6 +200,32 @@ describe('demo data', () => {
       expect(db.prepare('SELECT clip_id FROM event').all()).toEqual([{ clip_id: user.clip }]);
     });
 
+    it("demo removal's event check reads only its own tenant's events", async () => {
+      const { db, sql } = await setup();
+      await importSeed(sql, TENANT_B, readSeed(), readJson(SEED_SCHEMA_PATH));
+      fillDemo(db, TENANT_A);
+      const demo = (
+        db
+          .prepare('SELECT id FROM filament WHERE tenant_id = ? AND manufacturer = ?')
+          .get(TENANT_A, DEMO_MANUFACTURER) as { id: string }
+      ).id;
+      // Tenant B reuses the demo filament's id (ids are unique per tenant only) and has an event about
+      // it with no clip: in A's tenant that would stop the removal, so B's must not be seen at all.
+      db.prepare(
+        "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'Other', 'PETG', 'Grey', 'disposable')",
+      ).run(TENANT_B, demo);
+      db.prepare(
+        "INSERT INTO event (tenant_id, id, type, filament_id) VALUES (?, '00000000-0000-4000-8000-00000000b001', 'intake', ?)",
+      ).run(TENANT_B, demo);
+      expect(removeDemo(db, TENANT_A)).toBe(27);
+      expect(
+        db.prepare('SELECT COUNT(*) AS n FROM event WHERE tenant_id = ?').get(TENANT_B),
+      ).toMatchObject({ n: 1 });
+      expect(
+        db.prepare('SELECT COUNT(*) AS n FROM filament WHERE tenant_id = ?').get(TENANT_B),
+      ).toMatchObject({ n: 1 });
+    });
+
     it('refuses when more than one filament matches the demo fingerprint', async () => {
       const { db } = await setup();
       fillDemo(db, TENANT_A);
