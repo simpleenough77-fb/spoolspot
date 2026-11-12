@@ -189,6 +189,9 @@ export function checkPlacement(node: LocationNode, count: number): PlacementChec
   };
 }
 
+/** Why a leaf ranks where it does: the spec's intake order (docs/spec.md, workflow 4). */
+export type SuggestionReason = 'same_filament' | 'manufacturer_preference' | 'most_free';
+
 export interface PlacementSuggestion {
   location_id: string;
   name: string;
@@ -197,11 +200,34 @@ export interface PlacementSuggestion {
   free: number;
   /** True when all `count` units fit here without going over. */
   fits_all: boolean;
+  /** The rule that put this leaf where it is; 'most_free' when no preference applies. */
+  reason: SuggestionReason;
 }
 
 /**
+ * What is known about the thing being placed, as sets of leaf ids worked out by the data layer. Every
+ * set is optional; with none given the order is most free first, as before.
+ */
+export interface PlacementPreference {
+  /** Leaves that already hold the same filament (for a held clip: other clips of it). Ranked first. */
+  sameFilamentAt?: ReadonlySet<string>;
+  /** Leaves whose manufacturer preference matches the filament's manufacturer. Ranked next. */
+  manufacturerPreferredAt?: ReadonlySet<string>;
+  /** Leaves never to suggest, such as the place the item is already in. */
+  exclude?: ReadonlySet<string>;
+}
+
+const REASON_RANK: Record<SuggestionReason, number> = {
+  same_filament: 0,
+  manufacturer_preference: 1,
+  most_free: 2,
+};
+
+/**
  * Where there is room. Active_use slots are left out unless asked for by type. Leaves with no capacity set are excluded, and so is any full leaf: a suggestion
- * never goes over a limit, hard or soft. Most free places first, then name, so the order is stable.
+ * never goes over a limit, hard or soft. Order (spec, intake): leaves that already hold the same
+ * filament, then leaves whose manufacturer preference matches, then the rest; within each group most
+ * free places first, then name, so the order is stable. A suggestion is advisory: nothing is stored.
  */
 export function suggestPlacements(
   nodes: readonly LocationNode[],
@@ -209,28 +235,42 @@ export function suggestPlacements(
   type?: LocationType,
   limit = 5,
   within?: LocationNode,
+  prefer: PlacementPreference = {},
 ): PlacementSuggestion[] {
   const scope = leaves(within ? [within] : nodes);
   // Asking about a place that holds only slots (an AMS, or one slot) means the slots are wanted.
   const slotsOnly =
     within !== undefined && scope.length > 0 && scope.every((l) => l.type === 'active_use');
+  const reasonFor = (id: string): SuggestionReason =>
+    prefer.sameFilamentAt?.has(id) === true
+      ? 'same_filament'
+      : prefer.manufacturerPreferredAt?.has(id) === true
+        ? 'manufacturer_preference'
+        : 'most_free';
   const withRoom = scope.flatMap((l) => {
     const mode = l.capacity_mode;
     const free = l.free ?? 0;
-    const eligible = l.capacity !== null && mode !== null && free > 0;
+    const eligible =
+      l.capacity !== null && mode !== null && free > 0 && prefer.exclude?.has(l.id) !== true;
     // Slots are filled by the load workflow, so they are suggested only when asked for by type.
     const typeOk = type === undefined ? slotsOnly || l.type !== 'active_use' : l.type === type;
-    return eligible && typeOk ? [{ l, mode, free }] : [];
+    return eligible && typeOk ? [{ l, mode, free, reason: reasonFor(l.id) }] : [];
   });
   return withRoom
-    .sort((a, b) => b.free - a.free || a.l.name.localeCompare(b.l.name))
+    .sort(
+      (a, b) =>
+        REASON_RANK[a.reason] - REASON_RANK[b.reason] ||
+        b.free - a.free ||
+        a.l.name.localeCompare(b.l.name),
+    )
     .slice(0, limit)
-    .map(({ l, mode, free }) => ({
+    .map(({ l, mode, free, reason }) => ({
       location_id: l.id,
       name: l.name,
       type: l.type,
       capacity_mode: mode,
       free,
       fits_all: free >= count,
+      reason,
     }));
 }
