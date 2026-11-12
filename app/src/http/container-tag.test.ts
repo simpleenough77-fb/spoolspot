@@ -55,18 +55,22 @@ async function setup() {
   await importSeed(sql, TENANT_A, readSeed(), readJson(SEED_SCHEMA_PATH));
   db.prepare('INSERT INTO tenant_settings (tenant_id) VALUES (?)').run(TENANT_B);
   await importSeed(sql, TENANT_B, readSeed(), readJson(SEED_SCHEMA_PATH));
-  const filament = (tenant: string, manufacturer: string): string => {
-    const id = uuid();
+  const filament = (tenant: string, manufacturer: string, id = uuid()): string => {
     db.prepare(
       "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, ?, 'PLA', ?, 'disposable')",
     ).run(tenant, id, manufacturer, id);
     return id;
   };
-  const clip = (tenant: string, filamentId: string, location: string): string => {
+  const clip = (
+    tenant: string,
+    filamentId: string,
+    location: string | null,
+    state: 'on_spool' | 'spool_empty' | 'free' = 'on_spool',
+  ): string => {
     const id = uuid();
     db.prepare(
-      "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, ?, 'on_spool')",
-    ).run(tenant, id, clipTag(), filamentId, location);
+      'INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(tenant, id, clipTag(), filamentId, location, state);
     return id;
   };
   const boxed = (tenant: string, filamentId: string, location: string, count: number): void => {
@@ -150,6 +154,12 @@ describe('container tags (SPOOL-191)', () => {
     let view = asContainer(await scoped.tagView(ACTIVE_TAG));
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
 
+    // A stock line whose count is 0 is not "the same filament here", even on a roomier shelf.
+    boxed(TENANT_A, acme, 'loc3.shelf-1', 0);
+    view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
+    expect(view.held_clip_used).toBe(true);
+    expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
+
     // The same filament boxed on a small shelf wins over more room elsewhere.
     boxed(TENANT_A, acme, 'loc2.shelf-4', 2);
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
@@ -219,7 +229,7 @@ describe('container tags (SPOOL-191)', () => {
 
   it('gives the same 404 for an unknown, a malformed and another tenant’s container tag', async () => {
     const { get, appB, tagContainer } = await setup();
-    // Tenant B registers the same tag ID on its own container; A still sees only its own.
+    // A tag registered only in tenant B (and A's tag asked for in B) is unknown to the asker.
     tagContainer(TENANT_B, B_TAG, 'passive');
     const bodies: string[] = [];
     for (const [tag, app] of [
@@ -234,6 +244,71 @@ describe('container tags (SPOOL-191)', () => {
       bodies.push(await res.text());
     }
     expect(new Set(bodies).size).toBe(1);
+  });
+
+  it('resolves the same tag ID registered in two tenants to each tenant’s own container', async () => {
+    const { get, appB, tagContainer } = await setup();
+    // Tenant B registers A's tag ID on a different container of its own.
+    tagContainer(TENANT_B, ACTIVE_TAG, 'passive');
+    const a = (await (await get(`/api/v1/tags/${ACTIVE_TAG}`)).json()) as ContainerView;
+    const b = (await (await get(`/api/v1/tags/${ACTIVE_TAG}`, appB)).json()) as ContainerView;
+    expect(a.location.id).toBe('active');
+    expect(a.inside.map((l) => l.id)).toEqual(ACTIVE_SHELVES);
+    expect(b.location.id).toBe('passive');
+    expect(b.inside.every((l) => l.type === 'passive_storage')).toBe(true);
+  });
+
+  it('ranks a held clip with its own tenant’s data only (stock, other clips, manufacturer preference)', async () => {
+    const { data, filament, clip, boxed, tagContainer, db } = await setup();
+    // The same filament id and manufacturer exist in both tenants; every leaf slug exists in both.
+    const shared = filament(TENANT_B, 'Acme');
+    filament(TENANT_A, 'Acme', shared);
+    const binB = filament(TENANT_B, 'Acme');
+    const heldShelf = clip(TENANT_B, shared, 'loc1.shelf-1');
+    const heldFree = clip(TENANT_B, binB, null, 'free');
+    tagContainer(TENANT_B, B_TAG, 'active');
+    tagContainer(TENANT_B, 'C0NTA1NER0BC', 'clips');
+    for (const tenant of [TENANT_A, TENANT_B]) {
+      db.prepare(
+        "UPDATE location SET capacity = 20 WHERE tenant_id = ? AND id = 'clips.bin-1'",
+      ).run(tenant);
+    }
+    const scopedB = data(TENANT_B);
+    const views = async () => [
+      asContainer(await scopedB.tagView(B_TAG, heldShelf)),
+      asContainer(await scopedB.tagView('C0NTA1NER0BC', heldFree)),
+    ];
+    const before = await views();
+    expect(before[0]?.suggestion).toMatchObject({
+      location_id: 'loc1.shelf-2',
+      reason: 'most_free',
+    });
+    expect(before[1]?.suggestion).toMatchObject({
+      location_id: 'clips.bin-1',
+      reason: 'most_free',
+    });
+    // Tenant A: the same filament boxed and clipped, and a matching manufacturer preference.
+    boxed(TENANT_A, shared, 'loc2.shelf-4', 2);
+    clip(TENANT_A, shared, 'loc2.shelf-3');
+    db.prepare(
+      "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'clips.bin-1'",
+    ).run(TENANT_A);
+    const after = await views();
+    expect(after).toEqual(before);
+    expect(after.map((v) => v.suggestion?.reason)).toEqual(['most_free', 'most_free']);
+  });
+
+  it('suggests only inside the tapped container, even when a roomier leaf is elsewhere', async () => {
+    const { data, tagContainer, db } = await setup();
+    tagContainer(TENANT_A, 'C0NTA1NER001', 'loc1');
+    // loc3.shelf-1 (outside loc1) becomes the roomiest active shelf in the tree.
+    db.prepare("UPDATE location SET capacity = 40 WHERE tenant_id = ? AND id = 'loc3.shelf-1'").run(
+      TENANT_A,
+    );
+    const view = asContainer(await data(TENANT_A).tagView('C0NTA1NER001'));
+    expect(view.inside.map((l) => l.id)).toEqual(['loc1.shelf-1', 'loc1.shelf-2']);
+    expect(view.suggestion?.location_id).toBe('loc1.shelf-1');
+    expect(view.inside.map((l) => l.id)).toContain(view.suggestion?.location_id);
   });
 
   it('never lets another tenant resolve or see the first tenant’s container tag, leaves or clips', async () => {
