@@ -8,18 +8,19 @@ import type { Statement } from './sql.ts';
 /**
  * The closing check: the last statement of every batch that may carry an event delete grant. When a
  * grant row is still there, it inserts into event_delete_grant_closed, whose trigger always aborts, so
- * the batch rolls back. It does not depend on any pragma.
+ * the batch rolls back. It does not depend on any pragma. Every name here is qualified with `main.`:
+ * a temporary table of the same name would otherwise stand in for the real one.
  */
 export const GRANT_CLOSED_CHECK: Statement = {
   query:
-    'INSERT INTO event_delete_grant_closed (tenant_id, x) SELECT tenant_id, 1 FROM event_delete_grant LIMIT 1',
+    'INSERT INTO main.event_delete_grant_closed (tenant_id, x) SELECT tenant_id, 1 FROM main.event_delete_grant LIMIT 1',
 };
 
 /** Whether migration 0003 is in this database, so batches before it still work. */
 export function hasGrantCloser(db: DatabaseSync): boolean {
   return (
     db
-      .prepare("SELECT 1 AS n FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .prepare("SELECT 1 AS n FROM main.sqlite_master WHERE type = 'table' AND name = ?")
       .get('event_delete_grant_closed') !== undefined
   );
 }
@@ -33,8 +34,9 @@ export class DatabaseIntegrityError extends Error {
 
 function exists(db: DatabaseSync, type: 'table' | 'trigger', name: string): boolean {
   return (
-    db.prepare('SELECT 1 AS n FROM sqlite_master WHERE type = ? AND name = ?').get(type, name) !==
-    undefined
+    db
+      .prepare('SELECT 1 AS n FROM main.sqlite_master WHERE type = ? AND name = ?')
+      .get(type, name) !== undefined
   );
 }
 
@@ -64,7 +66,9 @@ export function verifyDatabase(db: DatabaseSync): void {
     }
   }
   if (exists(db, 'table', 'event_delete_grant')) {
-    const open = db.prepare('SELECT COUNT(*) AS n FROM event_delete_grant').get() as { n: number };
+    const open = db.prepare('SELECT COUNT(*) AS n FROM main.event_delete_grant').get() as {
+      n: number;
+    };
     if (open.n > 0) {
       throw new DatabaseIntegrityError(
         'an event delete grant was left open; remove the row from event_delete_grant after checking which events are missing',

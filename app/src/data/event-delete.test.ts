@@ -425,6 +425,56 @@ describe('the closing check does not depend on pragmas (review round 1)', () => 
   });
 });
 
+describe('temporary tables cannot stand in for the real ones (review round 2)', () => {
+  it('a temporary grant table does not hide an open grant from the closing check', async () => {
+    const { db, sql } = await setup();
+    await expect(
+      sql.batch([
+        openGrant(TENANT_A),
+        { query: 'CREATE TEMP TABLE event_delete_grant (tenant_id TEXT)' },
+        { query: 'PRAGMA defer_foreign_keys = OFF' },
+      ]),
+    ).rejects.toThrow(/grant left open/);
+    expect(grants(db)).toBe(0);
+  });
+
+  it('a temporary closer table does not swallow the closing check', async () => {
+    const { db, sql } = await setup();
+    await expect(
+      sql.batch([
+        openGrant(TENANT_A),
+        { query: 'CREATE TEMP TABLE event_delete_grant_closed (tenant_id TEXT, x INTEGER)' },
+        { query: 'PRAGMA defer_foreign_keys = OFF' },
+      ]),
+    ).rejects.toThrow(/grant left open/);
+    expect(grants(db)).toBe(0);
+  });
+
+  it('a temporary grant table opens nothing', async () => {
+    const { db } = await setup();
+    db.exec('CREATE TEMP TABLE event_delete_grant (tenant_id TEXT, scope TEXT, filament_id TEXT)');
+    db.prepare("INSERT INTO temp.event_delete_grant VALUES (?, 'tenant', NULL)").run(TENANT_A);
+    expect(() => db.prepare('DELETE FROM event WHERE tenant_id = ?').run(TENANT_A)).toThrow(
+      /append-only/,
+    );
+    db.exec('DROP TABLE temp.event_delete_grant');
+  });
+
+  it('startup still sees a leftover grant behind a temporary table of the same name', async () => {
+    const { db } = await setup();
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.prepare("INSERT INTO event_delete_grant (tenant_id, scope) VALUES (?, 'tenant')").run(
+      TENANT_A,
+    );
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('CREATE TEMP TABLE event_delete_grant (tenant_id TEXT)');
+    db.exec('CREATE TEMP TABLE event_delete_grant_closed (tenant_id TEXT, x INTEGER)');
+    expect(() => {
+      verifyDatabase(db);
+    }).toThrow(/grant was left open/);
+  });
+});
+
 describe('deleteTenant', () => {
   it('removes everything tenant A has, events included, and nothing of tenant B', async () => {
     const { db, sql } = await setup();
