@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { verifyDatabase } from './integrity.ts';
 
 const NAME = /^\d{4}_[a-z0-9_]+\.sql$/;
 
@@ -62,5 +63,7 @@ export function runMigrations(db: DatabaseSync, dir: string = MIGRATIONS_DIR): s
     }
     newlyApplied.push(file);
   }
+  // Every entry point migrates before it uses the database, so this is where an unsafe database is refused.
+  verifyDatabase(db);
   return newlyApplied;
 }

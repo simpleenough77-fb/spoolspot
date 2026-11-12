@@ -4,7 +4,9 @@
 // places. It never touches anything that is not its own, and it records no weight, cost or usage.
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { guardedEventDelete } from '../data/event-delete.ts';
 import { DEMO_CLIP_TAG_PREFIX, DEMO_PLACE_TAG_PREFIX } from '../data/tags.ts';
+import { GRANT_CLOSED_CHECK } from '../db/integrity.ts';
 
 /** Marks every demo row: the filament's manufacturer, and the "DEM0" start of each clip tag. */
 export const DEMO_MANUFACTURER = 'SpoolSpot demo';
@@ -32,11 +34,81 @@ function clipTag(n: number): string {
   return `${TAG_PREFIX}${String(n).padStart(8, '0')}`;
 }
 
+/** Demo removal stopped because something it would delete is not demo data. Nothing was changed. */
+export class DemoRemovalRefused extends Error {
+  constructor(reason: string) {
+    super(`demo removal refused, nothing changed: ${reason}`);
+    this.name = 'DemoRemovalRefused';
+  }
+}
+
+/** Every demo clip tag: the shared demo clip prefix (data/tags.ts) and eight digits (see clipTag). */
+const DEMO_CLIP_TAG_GLOB = `${DEMO_CLIP_TAG_PREFIX}[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]`;
+
+/**
+ * The demo filament, found by its whole fingerprint (manufacturer, type, one of the two demo colours,
+ * disposable), not by its name alone. The catalog import refuses the demo manufacturer name, but a
+ * database may hold one from before; more than one match is refused rather than guessed.
+ */
 function demoFilament(db: DatabaseSync, tenantId: string): string | undefined {
-  const row = db
-    .prepare('SELECT id FROM filament WHERE tenant_id = ? AND manufacturer = ?')
-    .get(tenantId, DEMO_MANUFACTURER) as { id: string } | undefined;
-  return row?.id;
+  const rows = db
+    .prepare(
+      `SELECT id FROM filament
+        WHERE tenant_id = ? AND manufacturer = ? AND type = 'PLA' AND color IN (?, ?)
+          AND spool_kind = 'disposable'`,
+    )
+    .all(tenantId, DEMO_MANUFACTURER, COLOR_PLAIN, COLOR_CAPACITY_SET) as { id: string }[];
+  if (rows.length > 1) throw new DemoRemovalRefused('more than one filament looks like the demo');
+  return rows[0]?.id;
+}
+
+/**
+ * Refuses unless everything the removal would delete is demo data: every clip of the demo filament
+ * carries a demo clip tag, its only boxed stock is the demo line, and every event about the demo filament or its clips names a demo clip and
+ * the demo filament (or no filament). An event with no clip, a real clip or another filament is the
+ * person's history, so the whole removal stops instead.
+ */
+function assertOnlyDemo(db: DatabaseSync, tenantId: string, filament: string): void {
+  const realClip = db
+    .prepare(
+      'SELECT 1 AS n FROM clip WHERE tenant_id = ? AND filament_id = ? AND tag_id NOT GLOB ? LIMIT 1',
+    )
+    .get(tenantId, filament, DEMO_CLIP_TAG_GLOB);
+  if (realClip !== undefined) throw new DemoRemovalRefused('a clip of this filament is not a demo clip');
+  // fillDemo creates one boxed line: spools on the soft demo shelf. Its count may have been tapped
+  // during a demo; any other line of the demo filament was added by the person, so stop.
+  const otherStock = db
+    .prepare(
+      `SELECT 1 AS n FROM stock_line
+        WHERE tenant_id = ? AND filament_id = ? AND NOT (location_id = ? AND pack = 'spool') LIMIT 1`,
+    )
+    .get(tenantId, filament, SOFT_DEMO_LOCATION);
+  if (otherStock !== undefined) {
+    throw new DemoRemovalRefused('boxed stock of this filament is not the demo line');
+  }
+  const demoClips = `SELECT k.id FROM clip k
+                      WHERE k.tenant_id = ? AND k.filament_id = ? AND k.tag_id GLOB ?`;
+  const notDemo = db
+    .prepare(
+      `SELECT 1 AS n FROM event e
+        WHERE e.tenant_id = ?
+          AND (e.filament_id = ? OR e.clip_id IN (${demoClips}))
+          AND NOT (e.clip_id IS NOT NULL AND e.clip_id IN (${demoClips})
+                   AND (e.filament_id IS NULL OR e.filament_id = ?))
+        LIMIT 1`,
+    )
+    .get(
+      tenantId,
+      filament,
+      tenantId,
+      filament,
+      DEMO_CLIP_TAG_GLOB,
+      tenantId,
+      filament,
+      DEMO_CLIP_TAG_GLOB,
+      filament,
+    );
+  if (notDemo !== undefined) throw new DemoRemovalRefused('an event about the demo is not demo history');
 }
 
 /** Adds the demo items. Safe to run twice: the second run changes nothing. */
@@ -109,18 +181,33 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
   }
 }
 
-/** Removes only what fillDemo added, and puts the closet shelf's capacity back to "not set". */
+/**
+ * Removes only what fillDemo added, and puts the closet shelf's capacity back to "not set". Moving a demo
+ * clip records events about it; those are demo history, not the person's, so they go too, under a grant
+ * limited to the demo filament (SPOOL-194). Every other event stays: the database refuses the rest.
+ */
 export function removeDemo(db: DatabaseSync, tenantId: string): number {
-  const filament = demoFilament(db, tenantId);
-  if (filament === undefined) return 0;
-  const setCapacity =
-    (
-      db.prepare('SELECT color FROM filament WHERE tenant_id = ? AND id = ?').get(tenantId, filament) as
-        | { color: string }
-        | undefined
-    )?.color === COLOR_CAPACITY_SET;
-  db.exec('BEGIN');
+  // Everything is read inside the write transaction, so nothing can change between the checks and
+  // the deletes.
+  db.exec('BEGIN IMMEDIATE');
   try {
+    const filament = demoFilament(db, tenantId);
+    if (filament === undefined) {
+      db.exec('COMMIT');
+      return 0;
+    }
+    const setCapacity =
+      (
+        db
+          .prepare('SELECT color FROM filament WHERE tenant_id = ? AND id = ?')
+          .get(tenantId, filament) as { color: string } | undefined
+      )?.color === COLOR_CAPACITY_SET;
+    assertOnlyDemo(db, tenantId, filament);
+    // Events first (they reference the demo clips and filament), and the grant is closed before the
+    // filament it names is deleted.
+    for (const s of guardedEventDelete(tenantId, { scope: 'filament', filamentId: filament })) {
+      db.prepare(s.query).run(...(s.params ?? []));
+    }
     const clips = db
       .prepare('DELETE FROM clip WHERE tenant_id = ? AND filament_id = ?')
       .run(tenantId, filament);
@@ -140,6 +227,8 @@ export function removeDemo(db: DatabaseSync, tenantId: string): number {
         'UPDATE location SET capacity = NULL WHERE tenant_id = ? AND id = ? AND capacity = ?',
       ).run(tenantId, SOFT_DEMO_LOCATION, SOFT_DEMO_CAPACITY);
     }
+    // This transaction does not go through the adapter, so it runs the closing check itself, last.
+    db.prepare(GRANT_CLOSED_CHECK.query).run();
     db.exec('COMMIT');
     return Number(clips.changes);
   } catch (error) {

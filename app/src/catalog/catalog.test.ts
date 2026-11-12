@@ -50,6 +50,14 @@ describe('validateCatalog', () => {
     expect(validateCatalog({ ...doc(entry()), extra: 1 }, schema).length).toBeGreaterThan(0);
   });
 
+  it('reserves the demo manufacturer name, in any letter case', () => {
+    for (const manufacturer of ['SpoolSpot demo', 'spoolspot DEMO']) {
+      const issues = validateCatalog(doc(entry({ manufacturer })), schema);
+      expect(issues.map((i) => i.message).join(), manufacturer).toContain('reserved');
+    }
+    expect(validateCatalog(doc(entry({ manufacturer: 'SpoolSpot demos' })), schema)).toEqual([]);
+  });
+
   it('rejects duplicate ids and the same manufacturer, type and color in any letter case', () => {
     const dupId = validateCatalog(doc(entry(), entry({ color: 'White' })), schema);
     expect(dupId.map((i) => i.message).join()).toContain('duplicate id');

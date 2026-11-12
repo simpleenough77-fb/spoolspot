@@ -2,6 +2,7 @@
 // Validation of a filament catalog (sample format until the studio contract exists, SPOOL-7).
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormatsModule from 'ajv-formats';
+import { DEMO_MANUFACTURER } from '../seed/demo.ts';
 
 const addFormats = addFormatsModule.default;
 
@@ -70,6 +71,13 @@ export function validateCatalog(doc: unknown, schema: object): CatalogIssue[] {
     for (const field of ['manufacturer', 'type', 'color'] as const) {
       const problem = textIssue(f[field]);
       if (problem) issues.push({ path: `/filaments/${String(i)}/${field}`, message: problem });
+    }
+    // Demo items are found by this name (seed/demo.ts); an imported filament may not use it.
+    if (f.manufacturer.normalize('NFC').toLowerCase() === DEMO_MANUFACTURER.toLowerCase()) {
+      issues.push({
+        path: `/filaments/${String(i)}/manufacturer`,
+        message: `"${DEMO_MANUFACTURER}" is reserved for demo items`,
+      });
     }
     if (ids.has(f.id))
       issues.push({ path: `/filaments/${String(i)}/id`, message: `duplicate id "${f.id}"` });

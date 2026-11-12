@@ -34,7 +34,14 @@ if (!isLoopback(config.host) && !config.allowLan) {
 }
 
 const db = openDatabase(config.databasePath);
-const applied = runMigrations(db);
+let applied: string[];
+try {
+  applied = runMigrations(db);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  db.close();
+  process.exit(1);
+}
 const sql = sqlFromDatabase(db);
 
 // The page a tag opens (ADR-0001 phase 1: this server is the resolver). Off unless an instance code is set.
