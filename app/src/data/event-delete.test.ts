@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPOOL-194: the event log stays append-only in the database; events go only inside a batch that opens
 // and closes a grant for one tenant (migration 0003). Tenant deletion uses that path.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { Scope } from '../auth/principal.ts';
 import { runMigrations } from '../db/migrate.ts';
@@ -424,29 +424,26 @@ describe('deleteTenant', () => {
 });
 
 describe('who can open a grant', () => {
-  it('only the guarded-delete module, tenant deletion and demo removal use it', () => {
+  // A guard against mistakes, not a security control: it catches a grant used from a new place by
+  // accident (any letter case, the partial names too), so that place gets reviewed. Code built to hide
+  // the names (string building, generated files) would get past it; review and the database triggers
+  // are what stop that. It reads the same file list as the SPDX check: every tracked file.
+  it('only the guarded-delete modules, tenant deletion and demo removal name the grant', () => {
     const allowed = [
+      'app/migrations/0003_event_delete_grant.sql',
       'app/src/data/event-delete.ts',
       'app/src/data/tenant-delete.ts',
       'app/src/db/integrity.ts',
+      'app/src/db/sqlite.ts',
       'app/src/seed/demo.ts',
     ];
-    const files: string[] = [];
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const path = join(dir, name);
-        if (statSync(path).isDirectory()) walk(path);
-        else if (/\.(ts|js)$/.test(name) && !name.endsWith('.test.ts')) files.push(path);
-      }
-    };
-    walk('app/src');
-    walk('app/public');
-    walk('scripts');
-    const users = files.filter((f) =>
-      /event_delete_grant|guardedEventDelete|deleteTenant|event-delete\.ts|tenant-delete\.ts/.test(
-        readFileSync(f, 'utf8'),
-      ),
-    );
+    const names =
+      /event[ _-]?delete|delete[ _-]?grant|grant[ _-]?closed|delete[ _-]?tenant|tenant[ _-]?delete/i;
+    const tracked = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+      .split('\0')
+      .filter((p) => p !== '' && !p.endsWith('.test.ts'));
+    expect(tracked.length).toBeGreaterThan(50);
+    const users = tracked.filter((f) => names.test(readFileSync(f, 'utf8')));
     expect(users.sort()).toEqual(allowed.sort());
   });
 });
