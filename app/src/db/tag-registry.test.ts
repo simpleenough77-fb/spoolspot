@@ -119,7 +119,7 @@ describe('tag registry (SPOOL-177)', () => {
     expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: 'uno' }]);
   });
 
-  it('never replaces a location or clip row in place, which would skip the delete triggers', () => {
+  it('never replaces a location, clip or event row in place, which would skip the delete triggers', () => {
     const found: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -130,7 +130,9 @@ describe('tag registry (SPOOL-177)', () => {
           !entry.name.endsWith('tag-registry.test.ts')
         ) {
           const text = readFileSync(path, 'utf8');
-          if (/(INSERT\s+OR\s+REPLACE|REPLACE\s+INTO)\s+(INTO\s+)?(location|clip)\b/i.test(text)) {
+          if (
+            /(INSERT\s+OR\s+REPLACE|REPLACE\s+INTO)\s+(INTO\s+)?(location|clip|event)\b/i.test(text)
+          ) {
             found.push(path);
           }
         }

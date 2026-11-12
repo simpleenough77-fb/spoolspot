@@ -68,11 +68,13 @@ function addFilament(
 }
 
 describe('migrations 0001 and 0002', () => {
-  it('creates exactly the seven tables', () => {
+  it('creates exactly the nine tables (0003 adds the event delete grant and its closer)', () => {
     const { db } = memoryDatabase();
     expect(tables(db)).toEqual([
       'clip',
       'event',
+      'event_delete_grant',
+      'event_delete_grant_closed',
       'filament',
       'location',
       'stock_line',

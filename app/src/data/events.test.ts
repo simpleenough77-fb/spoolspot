@@ -145,8 +145,41 @@ function sourceFiles(dir = 'app/src'): string[] {
   });
 }
 
+/**
+ * Event-table statements that are allowed, each by file AND exact statement shape. Before a listed
+ * file is scanned, only text matching its own patterns is removed, so any other read in the same file
+ * (a SELECT added later, say) is still flagged. Every entry names the cross-tenant tests that cover it.
+ */
+const ALLOWED_EVENT_STATEMENTS: readonly { file: string; kind: string; pattern: RegExp }[] = [
+  {
+    // Guarded deletes (SPOOL-194): run only inside a batch holding a grant for one tenant. They return
+    // no rows to a caller. Covered by app/src/data/event-delete.test.ts: "a grant for tenant A cannot
+    // delete tenant B's events", "a filament delete stays in its tenant when another tenant reuses the
+    // same ids", "removes everything tenant A has, events included, and nothing of tenant B".
+    file: join('app/src/data/event-delete.ts'),
+    kind: 'DELETE FROM event (guarded)',
+    pattern: /\bDELETE FROM event\b(?!_)/g,
+  },
+  {
+    // Demo removal's refuse-unless-demo check (SPOOL-194): a tenant-bound existence test whose only
+    // result is "stop" or "go on"; no event data leaves it. Covered by app/src/seed/demo.test.ts:
+    // "demo removal's event check reads only its own tenant's events".
+    file: join('app/src/seed/demo.ts'),
+    kind: 'existence check, tenant-bound',
+    pattern: /SELECT 1 AS n FROM event e\s+WHERE e\.tenant_id = \?/g,
+  },
+];
+
+/** The source as the scan sees it: a listed file loses only the statements allowed for it. */
+function withoutAllowed(file: string, source: string): string {
+  return ALLOWED_EVENT_STATEMENTS.filter((a) => a.file === file).reduce(
+    (text, a) => text.replace(a.pattern, ''),
+    source,
+  );
+}
+
 function eventTableReaders(): string[] {
-  return sourceFiles().filter((f) => readsEventTable(readFileSync(f, 'utf8')));
+  return sourceFiles().filter((f) => readsEventTable(withoutAllowed(f, readFileSync(f, 'utf8'))));
 }
 
 describe('the scan for event-table reads (review round 1)', () => {
@@ -187,6 +220,23 @@ describe('the scan for event-table reads (review round 1)', () => {
       expect(readsEventTable(sql), sql).toBe(false);
     }
     expect(readsEventTable(readFileSync('app/src/data/events.ts', 'utf8'))).toBe(false);
+  });
+
+  it('allows only the listed statements in the listed files, so a new read there is still flagged', () => {
+    for (const a of ALLOWED_EVENT_STATEMENTS) {
+      const source = readFileSync(a.file, 'utf8');
+      // Each entry still matches its file, so a stale entry cannot linger unnoticed.
+      expect(source.match(a.pattern)?.length ?? 0, a.file).toBeGreaterThan(0);
+      expect(readsEventTable(withoutAllowed(a.file, source)), a.file).toBe(false);
+      expect(
+        readsEventTable(withoutAllowed(a.file, `${source}\nconst q = 'SELECT id FROM event';`)),
+        a.file,
+      ).toBe(true);
+    }
+    // The same allowed statement in any other file is still a finding.
+    expect(
+      readsEventTable(withoutAllowed('app/src/http/app.ts', 'DELETE FROM event WHERE 1')),
+    ).toBe(true);
   });
 
   it('walks every non-test file under app/src, nested folders included', () => {
@@ -492,8 +542,9 @@ describe('the event log across tenants', () => {
     for (const secret of secrets) expect(seen).not.toContain(secret);
     expect(s.events(TENANT_B)).toHaveLength(0);
 
-    // No module under app/src reads the event table today. A future read path must arrive with its own
-    // cross-tenant test (SPOOL-75 gate); this check fails until it does, so it cannot slip in unseen.
+    // No module under app/src reads the event table today, apart from the statements allowed above by
+    // file and shape. A future read path must arrive with its own cross-tenant test (SPOOL-75 gate) and
+    // an allow-list entry naming it; this check fails until it does, so it cannot slip in unseen.
     expect(eventTableReaders()).toEqual([]);
   });
 });
