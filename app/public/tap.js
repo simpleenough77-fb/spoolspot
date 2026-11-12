@@ -28,6 +28,7 @@ import {
   leavesUnder,
   movedText,
   name,
+  partsText,
   pathTo,
   roomText,
   suggestedLabel,
@@ -305,7 +306,7 @@ function showContainer(view, held, browsed, nodes, mover) {
     const go = el('button', 'Choose this place', {
       type: 'button',
       id: 'suggestion-go',
-      'aria-label': isolatedText(suggestedLabel(targetName)),
+      'aria-label': partsText(suggestedLabel(targetName)),
     });
     go.addEventListener('click', () => {
       choose(drawnFor, target, mover);
@@ -323,7 +324,7 @@ function showContainer(view, held, browsed, nodes, mover) {
     } else if (copy.canChoose) {
       const button = el('button', 'Choose', {
         type: 'button',
-        'aria-label': isolatedText(row.label),
+        'aria-label': partsText(row.label),
       });
       button.addEventListener('click', () => {
         choose(drawnFor, row.place.id, mover);
@@ -347,7 +348,7 @@ async function listClips(locationId, mover, mine) {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = 'Move';
-      button.setAttribute('aria-label', isolatedText(['Move ', name(clipLabel(c))]));
+      button.setAttribute('aria-label', partsText(['Move ', name(clipLabel(c))]));
       button.addEventListener('click', () => {
         const clip = { id: c.id, label: clipLabel(c) };
         holdClip(clip.id, clip.label, locationId);
@@ -373,8 +374,9 @@ async function listClips(locationId, mover, mine) {
 /**
  * The non-NFC way to the same views: every place in tree order, chosen with a tap. Indented with
  * no-break spaces (ordinary spaces collapse), and a container says it means everything inside, as on
- * the main page's placement picker. Option text cannot hold a <bdi>, so the path is isolated with
- * bidi isolate characters instead.
+ * the main page's placement picker. Option text cannot hold a <bdi>, and a bidi control character
+ * in a name would otherwise reorder the visible option (its indentation and "(anywhere inside)"), so
+ * the path is isolated with bidi isolate characters there; accessible names never get them.
  */
 function fillBrowse(nodes) {
   const chosen = subject === TAG ? '' : subject.place;

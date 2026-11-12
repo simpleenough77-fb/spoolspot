@@ -93,6 +93,8 @@ interface Text {
   textContent: string;
 }
 interface MoverModule {
+  holdClip(id: string, label: string, from?: string | null): void;
+  heldClip(): { id: string; label: string; from: string | null } | null;
   requestMove(
     clipId: string,
     to: string,
@@ -384,6 +386,36 @@ describe('tap page wording (tapview.js)', () => {
     expect(copy.canChoose).toBe(false);
   });
 
+  it('a stored slot place is not trusted when the server returned a suggestion (L6)', () => {
+    const copy = tapView.suggestionCopy({ suggestion, held_clip_used: true }, held, {
+      inSlot: true,
+    });
+    expect(T(copy.text)).not.toContain('printer slot');
+    expect(T(copy.heading)).toBe('Best place for Acme PLA Red');
+    expect(T(copy.text)).toContain('Suggested: Shelf 2 (');
+    expect(copy.targetId).toBe('shelf-2');
+    expect(copy.canChoose).toBe(true);
+    // Nor when the server did not use the held clip at all.
+    const unused = tapView.suggestionCopy({ suggestion: null, held_clip_used: false }, held, {
+      inSlot: true,
+    });
+    expect(T(unused.text)).not.toContain('printer slot');
+    // A chosen container has no server answer to agree, so the stored place hides nothing.
+    expect(
+      tapView.suggestionCopy({ suggestion: null }, held, { browsed: true, inSlot: true }).canChoose,
+    ).toBe(true);
+  });
+
+  it('accessible names are plain words with the visible label first (N1, WCAG 2.5.3)', () => {
+    const rows = tapView.insideRows([leaf()], null, tree);
+    const label = tapView.partsText(rows[0]?.label ?? []);
+    expect(label).toBe('Choose Shelf 2');
+    expect(label).not.toMatch(/[\u2066-\u2069]/u);
+    const go = tapView.partsText(tapView.suggestedLabel('Shelf 2'));
+    expect(go.startsWith('Choose this place')).toBe(true);
+    expect(go).not.toMatch(/[\u2066-\u2069]/u);
+  });
+
   it('never presents the suggestion as for the held clip when the API did not use it (L2)', () => {
     const copy = tapView.suggestionCopy({ suggestion, held_clip_used: false }, held);
     expect(T(copy.heading)).toBe('Most room');
@@ -408,9 +440,6 @@ describe('tap page wording (tapview.js)', () => {
     );
     const browsed = tapView.suggestionCopy({ suggestion: null }, held, { browsed: true });
     expect(browsed).toMatchObject({ targetId: null, canChoose: true });
-    expect(
-      tapView.suggestionCopy({ suggestion: null }, held, { browsed: true, inSlot: true }).canChoose,
-    ).toBe(false);
   });
 
   it('gives each Choose a distinct name: the parent is added when two places share a name', () => {
@@ -512,6 +541,65 @@ describe('the container suggestion on the page is the API’s', () => {
     expect(T(tapView.clipPlaceText(tapView.pathTo(tree.locations, none.clip.location_id)))).toBe(
       'No place is recorded for this clip.',
     );
+  });
+});
+
+describe('the held clip in browser storage (mover.js, N3)', () => {
+  const KEY = 'spoolspot.held-clip';
+  const ID = '00000000-0000-4000-8000-000000000001';
+  function fakeStorage() {
+    const data = new Map<string, string>();
+    return {
+      data,
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        data.set(k, v);
+      },
+      removeItem: (k: string) => {
+        data.delete(k);
+      },
+    };
+  }
+  const stored = (from: unknown, omit = false) => {
+    const storage = fakeStorage();
+    const raw: Record<string, unknown> = { id: ID, label: 'Acme PLA Red', at: Date.now() };
+    if (!omit) raw.from = from;
+    storage.setItem(KEY, JSON.stringify(raw));
+    vi.stubGlobal('localStorage', storage);
+    return storage;
+  };
+
+  it('keeps a valid place it was picked up from', () => {
+    stored('loc1.shelf-1');
+    expect(mover.heldClip()).toEqual({ id: ID, label: 'Acme PLA Red', from: 'loc1.shelf-1' });
+  });
+
+  it.each([
+    ['a number', 5],
+    ['an object', { id: 'loc1' }],
+    ['over 64 characters', `a${'.b'.repeat(40)}`],
+    ['characters outside the place-id pattern', 'Loc 1/../x'],
+    ['markup', '<img src=x>'],
+    ['null', null],
+  ])('turns a stored place that is %s into null, and keeps the hold', (_what, from) => {
+    const storage = stored(from);
+    expect(mover.heldClip()).toEqual({ id: ID, label: 'Acme PLA Red', from: null });
+    expect(storage.data.has(KEY)).toBe(true);
+  });
+
+  it('turns a missing place into null, and keeps the hold', () => {
+    const storage = stored(undefined, true);
+    expect(mover.heldClip()).toEqual({ id: ID, label: 'Acme PLA Red', from: null });
+    expect(storage.data.has(KEY)).toBe(true);
+  });
+
+  it('stores only a valid place when holding', () => {
+    const storage = fakeStorage();
+    vi.stubGlobal('localStorage', storage);
+    mover.holdClip(ID, 'Acme PLA Red', 'Not A Place!');
+    expect(JSON.parse(storage.data.get(KEY) ?? '{}')).toMatchObject({ id: ID, from: null });
+    mover.holdClip(ID, 'Acme PLA Red', 'clips.bin-1');
+    expect(mover.heldClip()?.from).toBe('clips.bin-1');
   });
 });
 
