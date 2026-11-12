@@ -20,6 +20,9 @@ type Db = ReturnType<typeof memoryDatabase>['db'];
 
 const TAG_1 = '0123456789AB';
 const TAG_2 = 'CDEFGHJKMNPQ';
+const TAG_3 = 'RSTVWXYZ0003';
+const TAG_4 = 'RSTVWXYZ0004';
+const TAG_5 = 'RSTVWXYZ0005';
 
 function tenant(db: Db, id: string): void {
   db.prepare('INSERT INTO tenant_settings (tenant_id) VALUES (?)').run(id);
@@ -95,17 +98,23 @@ describe('tag registry (SPOOL-177)', () => {
     expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_2, kind: 'location', target_id: 'one' }]);
     db.prepare('UPDATE location SET tag_id = NULL WHERE id = ?').run('one');
     expect(tags(db, TENANT_A)).toEqual([]);
-    db.prepare('UPDATE location SET tag_id = ? WHERE id = ?').run(TAG_1, 'one');
+    // A dropped ID is retired for good (0006, SPOOL-201), so a fresh one is set here.
+    db.prepare('UPDATE location SET tag_id = ? WHERE id = ?').run(TAG_3, 'one');
     db.prepare('DELETE FROM location WHERE id = ?').run('one');
     expect(tags(db, TENANT_A)).toEqual([]);
 
     const f = filament(db, TENANT_A);
-    const id = clip(db, TENANT_A, f, TAG_1);
-    expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'clip', target_id: id }]);
-    db.prepare('UPDATE clip SET tag_id = ? WHERE id = ?').run(TAG_2, id);
-    expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_2, kind: 'clip', target_id: id }]);
+    const id = clip(db, TENANT_A, f, TAG_4);
+    expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_4, kind: 'clip', target_id: id }]);
+    db.prepare('UPDATE clip SET tag_id = ? WHERE id = ?').run(TAG_5, id);
+    expect(tags(db, TENANT_A)).toEqual([{ tag_id: TAG_5, kind: 'clip', target_id: id }]);
     db.prepare('DELETE FROM clip WHERE id = ?').run(id);
     expect(tags(db, TENANT_A)).toEqual([]);
+    expect(
+      db
+        .prepare('SELECT tag_id FROM tag_retired WHERE tenant_id = ? ORDER BY tag_id')
+        .all(TENANT_A),
+    ).toEqual([TAG_1, TAG_2, TAG_3, TAG_4, TAG_5].sort().map((tag_id) => ({ tag_id })));
   });
 
   it('moves the registry row when a record changes its ID', () => {

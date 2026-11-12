@@ -172,6 +172,7 @@ describe('container tags (SPOOL-191)', () => {
     expect(migrate()).toEqual([
       '0004_stock_passive_only.sql',
       '0005_container_stays_container.sql',
+      '0006_retired_tag_ids.sql',
     ]);
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
     expect(view.held_clip_used).toBe(true);
@@ -430,6 +431,7 @@ describe('container tags (SPOOL-191)', () => {
     expect(migrate()).toEqual([
       '0004_stock_passive_only.sql',
       '0005_container_stays_container.sql',
+      '0006_retired_tag_ids.sql',
     ]);
     clip(TENANT_A, shared, 'loc2.shelf-3');
     db.prepare(

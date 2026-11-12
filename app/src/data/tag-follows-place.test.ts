@@ -75,12 +75,15 @@ function populate(db: Db, tenant: string): void {
   ).run(tenant, STOCK, FILAMENT);
 }
 
-/** Tenants A and B on a database built at 0004, then migrated through 0005. */
+/** Tenants A and B on a database built at 0004, then migrated through the latest migration. */
 function setup() {
   const { db, sql } = memoryDatabaseUpTo('0004_stock_passive_only.sql');
   populate(db, TENANT_A);
   populate(db, TENANT_B);
-  expect(runMigrations(db)).toEqual(['0005_container_stays_container.sql']);
+  expect(runMigrations(db)).toEqual([
+    '0005_container_stays_container.sql',
+    '0006_retired_tag_ids.sql',
+  ]);
   const principal = (tenantId: string): Principal => ({
     subject: tenantId,
     tenantId,

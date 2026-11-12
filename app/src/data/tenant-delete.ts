@@ -17,6 +17,12 @@ export interface TenantDeletion {
    * (triggers in migration 0002), so this counts only rows that had lost their record: normally 0.
    */
   orphanTags: number;
+  /**
+   * Retired tag IDs of the tenant (migration 0006), including those retired by this deletion's own
+   * deletes of clips and places. They go with the tenant: the database lets them go only once the
+   * tenant has no place, clip or registry row left.
+   */
+  retiredTags: number;
   /** 1 when the tenant existed, 0 when there was nothing to delete. */
   tenant: number;
 }
@@ -24,20 +30,22 @@ export interface TenantDeletion {
 /** Deletes everything one tenant has, or nothing if any step fails. Other tenants are never touched. */
 export async function deleteTenant(sql: Sql, tenantId: string): Promise<TenantDeletion> {
   checkTenantId(tenantId);
-  const [, events, , stockLines, clips, filaments, locations, orphanTags, tenant] = await sql.batch(
-    [
+  const [, events, , stockLines, clips, filaments, locations, orphanTags, retiredTags, tenant] =
+    await sql.batch([
       // Events first, under a grant closed in the same batch: they reference clips, filaments and places.
       ...guardedEventDelete(tenantId, { scope: 'tenant' }),
       { query: 'DELETE FROM stock_line WHERE tenant_id = ?', params: [tenantId] },
-      // Deleting a clip or location also removes its tag registry row (triggers in 0002).
+      // Deleting a clip or location also removes its tag registry row (triggers in 0002), which
+      // retires its ID (0006); the retired rows are deleted below with the rest of the tenant.
       { query: 'DELETE FROM clip WHERE tenant_id = ?', params: [tenantId] },
       { query: 'DELETE FROM filament WHERE tenant_id = ?', params: [tenantId] },
       // One statement for the whole tree: SQLite checks the parent foreign key at the end of it.
       { query: 'DELETE FROM location WHERE tenant_id = ?', params: [tenantId] },
       { query: 'DELETE FROM tag WHERE tenant_id = ?', params: [tenantId] },
+      // After everything that retires an ID (0006): deleting a clip, a place or a registry row.
+      { query: 'DELETE FROM tag_retired WHERE tenant_id = ?', params: [tenantId] },
       { query: 'DELETE FROM tenant_settings WHERE tenant_id = ?', params: [tenantId] },
-    ],
-  );
+    ]);
   return {
     events: events ?? 0,
     stockLines: stockLines ?? 0,
@@ -45,6 +53,7 @@ export async function deleteTenant(sql: Sql, tenantId: string): Promise<TenantDe
     filaments: filaments ?? 0,
     locations: locations ?? 0,
     orphanTags: orphanTags ?? 0,
+    retiredTags: retiredTags ?? 0,
     tenant: tenant ?? 0,
   };
 }
