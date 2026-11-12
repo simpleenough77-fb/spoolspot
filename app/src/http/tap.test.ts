@@ -611,6 +611,26 @@ describe('POST /api/v1/clips/:id/move', () => {
     expect(s.events()).toHaveLength(0);
   });
 
+  it('answers 400 invalid_request when the data layer refuses an id (defensive branch, SPOOL-197)', async () => {
+    const s = await setup();
+    const app = createApp({
+      auth: createDevTokenProvider({ token: TEST_TOKEN, tenantId: TENANT_A }),
+      data: (p) => ({
+        ...createScopedData(s.sql, p),
+        moveClip: () => Promise.resolve({ ok: false, refusal: 'invalid_request' }),
+      }),
+      allowedHosts: ['localhost'],
+    });
+    const refused = await s.request(`/api/v1/clips/${s.clipId}/move`, {
+      method: 'POST',
+      app,
+      headers: { ...bearer, ...json },
+      body: '{"to":"closet-storage.shelf-1"}',
+    });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: 'invalid_request' });
+  });
+
   it('needs the write scope', async () => {
     const s = await setup();
     const res = await move(s, s.clipId, { to: 'loc1.shelf-2' }, json);

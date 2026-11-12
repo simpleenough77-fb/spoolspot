@@ -3,7 +3,7 @@
 // every query binds that Principal's tenant: route handlers never receive a raw database handle, so an
 // unscoped query is not expressible from a handler. Each method also checks the scope it needs.
 import { ForbiddenError, hasScope, Scope, type Principal } from '../auth/principal.ts';
-import type { Sql } from '../db/sql.ts';
+import type { Sql, Statement } from '../db/sql.ts';
 import type { LocationType } from '../seed/validate.ts';
 import {
   buildTree,
@@ -16,6 +16,7 @@ import {
   type PlacementPreference,
   type PlacementSuggestion,
 } from './tree.ts';
+import { eventInsert, guardCondition, InvalidEventError } from './events.ts';
 import { createStockOps, type StockOps } from './stock.ts';
 import { normalizeTagId } from './tags.ts';
 
@@ -92,7 +93,9 @@ export type MoveRefusal =
   | 'slot_not_supported'
   | 'needs_confirmation'
   /** The clip or the place changed between the check and the write; nothing was stored. Try again. */
-  | 'conflict';
+  | 'conflict'
+  /** An id the event log refuses (a clip id that is not a canonical UUID, SPOOL-197); nothing was stored. */
+  | 'invalid_request';
 
 export type MoveResult =
   | { ok: true; moved: boolean; clip: ClipSummary; check: PlacementCheck }
@@ -314,32 +317,43 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       if (check.outcome === 'warning' && !confirm) {
         return { ok: false, refusal: 'needs_confirmation', check };
       }
-      // One atomic batch. Both statements carry the same guard, evaluated inside the write: the clip must
-      // still be where we read it, and a hard limit must still have room unless the person confirmed.
-      // If another request got there first the guard fails, nothing is stored, and we report a conflict.
-      const guard = (clipTable: string): string =>
-        `${clipTable}.location_id IS ?
-         AND (? = 1 OR NOT EXISTS (
-           SELECT 1 FROM location d
-            WHERE d.tenant_id = ${clipTable}.tenant_id AND d.id = ?
-              AND d.capacity_mode = 'hard' AND d.capacity IS NOT NULL
-              AND COALESCE((SELECT SUM(s.count) FROM stock_line s
-                             WHERE s.tenant_id = d.tenant_id AND s.location_id = d.id), 0)
-                  + (SELECT COUNT(*) FROM clip k
-                      WHERE k.tenant_id = d.tenant_id AND k.location_id = d.id) >= d.capacity))`;
-      const guardParams = [clip.location_id, confirm ? 1 : 0, destination.id];
-      await sql.batch([
-        {
-          query: `INSERT INTO event (tenant_id, id, type, clip_id, filament_id, from_location_id, to_location_id)
-                  SELECT c.tenant_id, ?, 'move', c.id, c.filament_id, c.location_id, ?
-                    FROM clip c WHERE c.tenant_id = ? AND c.id = ? AND ${guard('c')}`,
-          params: [crypto.randomUUID(), destination.id, tenantId, clip.id, ...guardParams],
-        },
-        {
-          query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${guard('clip')}`,
-          params: [destination.id, tenantId, clip.id, ...guardParams],
-        },
-      ]);
+      // One atomic batch. Both statements carry the same guard, rendered once by events.ts and
+      // evaluated inside the write: the clip must still be where we read it, and a hard limit must still
+      // have room unless the person confirmed. If another request got there first the guard fails,
+      // nothing is stored, and we report a conflict.
+      const guard = {
+        kind: 'clipStillAt',
+        locationId: clip.location_id,
+        hardLimit: { destinationId: destination.id, confirm },
+      } as const;
+      let statements: Statement[];
+      try {
+        const condition = guardCondition(principal, clip.id, guard);
+        statements = [
+          // The guard holds only while the clip is still at clip.location_id, so `from` is that value.
+          eventInsert(
+            principal,
+            {
+              type: 'move',
+              clipId: clip.id,
+              filamentId: null,
+              fromLocationId: clip.location_id,
+              toLocationId: destination.id,
+            },
+            guard,
+          ),
+          {
+            query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${condition.sql}`,
+            params: [destination.id, tenantId, clip.id, ...condition.params],
+          },
+        ];
+      } catch (error) {
+        // The event log's id checks are stricter than the clip table's (SPOOL-197): report it as
+        // invalid input, like the route does for a malformed id, not as a server error.
+        if (error instanceof InvalidEventError) return { ok: false, refusal: 'invalid_request' };
+        throw error;
+      }
+      await sql.batch(statements);
       const after = await clipById(clip.id);
       if (after?.location_id !== destination.id) return { ok: false, refusal: 'conflict' };
       return { ok: true, moved: true, clip: after, check };

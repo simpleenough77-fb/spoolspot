@@ -415,6 +415,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         return c.json({ error: 'needs_confirmation', check: result.check }, 409);
       case 'conflict':
         return c.json({ error: 'conflict' }, 409);
+      case 'invalid_request':
+        // Defensive: the id checks above already refuse what moveClip would report here (SPOOL-197).
+        return c.json({ error: 'invalid_request' }, 400);
       default:
         return c.json({ error: result.refusal }, 422);
     }
