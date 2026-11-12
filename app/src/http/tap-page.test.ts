@@ -33,6 +33,8 @@ interface Place {
   capacity: number | null;
   used: number;
   free: number | null;
+  over?: number;
+  capacity_unset?: number;
   children?: Place[];
 }
 interface Suggestion {
@@ -49,30 +51,43 @@ interface ContainerView {
   suggestion: Suggestion | null;
   held_clip_used: boolean;
 }
+type Parts = (string | { name: string })[];
+interface Held {
+  id: string;
+  label: string;
+  from?: string | null;
+}
 interface Copy {
-  heading: string;
-  text: string;
+  heading: Parts;
+  text: Parts;
   targetId: string | null;
+  canChoose: boolean;
 }
 interface TapView {
   validView(v: unknown): boolean;
   pathTo(nodes: Place[], id: string | null): PathStep[];
   findNode(nodes: Place[], id: string): Place | null;
   leavesUnder(node: Place): Place[];
-  placeSentence(path: PathStep[]): string;
-  clipPlaceText(path: PathStep[]): string;
+  partsText(parts: Parts): string;
+  isolatedText(parts: Parts): string;
+  placeSentence(path: PathStep[]): Parts;
+  clipPlaceText(path: PathStep[]): Parts;
   roomText(place: Place): string;
   takesClips(place: Place): boolean;
-  movedText(label: string, path: PathStep[]): string;
+  movedText(label: string, path: PathStep[]): Parts;
+  heldState(drawnFor: string | null, now: Held | null): 'same' | 'changed' | 'gone';
+  heldInSlot(held: Held | null, nodes: Place[]): boolean;
   suggestionCopy(
-    view: { suggestion: Suggestion | null },
-    held: { id: string; label: string } | null,
-    browsed?: boolean,
+    view: { suggestion: Suggestion | null; held_clip_used?: boolean },
+    held: Held | null,
+    options?: { browsed?: boolean; inSlot?: boolean },
   ): Copy;
   insideRows(
     inside: Place[],
     targetId: string | null,
-  ): { place: Place; suggested: boolean; text: string }[];
+    nodes?: Place[],
+  ): { place: Place; suggested: boolean; text: Parts; label: Parts }[];
+  suggestedLabel(placeName: string): Parts;
 }
 interface Text {
   textContent: string;
@@ -166,7 +181,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const T = (parts: Parts): string => tapView.partsText(parts);
+
 describe('tap page wording (tapview.js)', () => {
+  const leaf = (over: Partial<Place> = {}): Place => ({
+    id: 'shelf-2',
+    name: 'Shelf 2',
+    type: 'active_storage',
+    leaf: true,
+    capacity_mode: 'hard',
+    capacity: 10,
+    used: 4,
+    free: 6,
+    over: 0,
+    capacity_unset: 0,
+    children: [],
+    ...over,
+  });
   const tree: Place[] = [
     {
       id: 'home',
@@ -177,6 +208,8 @@ describe('tap page wording (tapview.js)', () => {
       capacity: 10,
       used: 4,
       free: 6,
+      over: 0,
+      capacity_unset: 0,
       children: [
         {
           id: 'closet',
@@ -187,19 +220,32 @@ describe('tap page wording (tapview.js)', () => {
           capacity: 10,
           used: 4,
           free: 6,
+          over: 0,
+          capacity_unset: 0,
           children: [
-            {
-              id: 'shelf-2',
-              name: 'Shelf 2',
-              type: 'active_storage',
-              leaf: true,
-              capacity_mode: 'hard',
-              capacity: 10,
-              used: 4,
-              free: 6,
-              children: [],
-            },
+            leaf(),
+            leaf({
+              id: 'slot-1',
+              name: 'Slot 1',
+              type: 'active_use',
+              capacity: 1,
+              used: 1,
+              free: 0,
+            }),
           ],
+        },
+        {
+          id: 'garage',
+          name: 'Garage',
+          type: 'container',
+          leaf: false,
+          capacity_mode: null,
+          capacity: 10,
+          used: 0,
+          free: 10,
+          over: 0,
+          capacity_unset: 0,
+          children: [leaf({ id: 'garage.shelf-2', used: 0, free: 10 })],
         },
       ],
     },
@@ -208,30 +254,73 @@ describe('tap page wording (tapview.js)', () => {
   it('tells where a clip belongs, with the chain of containers above it (the owner’s scenario)', () => {
     const path = tapView.pathTo(tree, 'shelf-2');
     expect(path.map((p) => p.name)).toEqual(['Home', 'Closet', 'Shelf 2']);
-    expect(tapView.clipPlaceText(path)).toBe('This clip belongs at Shelf 2.');
-    expect(tapView.placeSentence(path)).toBe('Shelf 2 (Home, Closet)');
-    expect(tapView.movedText('Acme PLA Red', path)).toBe(
+    expect(T(tapView.clipPlaceText(path))).toBe('This clip belongs at Shelf 2.');
+    expect(T(tapView.placeSentence(path))).toBe('Shelf 2 (Home, Closet)');
+    expect(T(tapView.movedText('Acme PLA Red', path))).toBe(
       'Moved. Acme PLA Red is now at Shelf 2 (Home, Closet).',
     );
+  });
+
+  it('keeps every name a separate piece, and isolates it when it must be plain text', () => {
+    const path = tapView.pathTo(tree, 'shelf-2');
+    expect(tapView.movedText('Acme PLA Red', path)).toEqual([
+      'Moved. ',
+      { name: 'Acme PLA Red' },
+      ' is now at ',
+      { name: 'Shelf 2' },
+      ' (',
+      { name: 'Home' },
+      ', ',
+      { name: 'Closet' },
+      ')',
+      '.',
+    ]);
+    // A right-to-left override in a name is kept, but cannot leak past the name.
+    expect(tapView.isolatedText(['Choose ', { name: 'a‮b' }])).toBe('Choose ⁨a‮b⁩');
   });
 
   it('says plainly when a clip has no place', () => {
     expect(tapView.pathTo(tree, null)).toEqual([]);
     expect(tapView.pathTo(tree, 'gone')).toEqual([]);
-    expect(tapView.clipPlaceText([])).toBe('No place is recorded for this clip.');
+    expect(T(tapView.clipPlaceText([]))).toBe('No place is recorded for this clip.');
   });
 
-  it('describes room with the limit in words, and an unset capacity', () => {
-    const shelf = tapView.findNode(tree, 'shelf-2');
-    if (!shelf) throw new Error('missing');
-    expect(tapView.roomText(shelf)).toBe('6 free of 10 (4 used), hard limit.');
-    expect(tapView.roomText({ ...shelf, capacity: null, free: null, used: 1 })).toBe(
-      'Capacity not set (1 item stored).',
-    );
-    const home = tree[0];
-    if (!home) throw new Error('missing');
-    expect(tapView.roomText(home)).toBe('6 free of 10 (4 used).');
-    expect(tapView.leavesUnder(home).map((l) => l.id)).toEqual(['shelf-2']);
+  describe('room, with the main page’s clauses (L4)', () => {
+    it('zero used, and the limit in words', () => {
+      expect(tapView.roomText(leaf({ used: 0, free: 10 }))).toBe(
+        '10 free of 10 (0 used), hard limit.',
+      );
+    });
+    it('exactly full at a hard limit', () => {
+      expect(tapView.roomText(leaf({ used: 10, free: 0 }))).toBe(
+        '0 free of 10 (10 used), hard limit.',
+      );
+    });
+    it('over-full at a soft limit says by how much', () => {
+      expect(
+        tapView.roomText(leaf({ capacity_mode: 'soft', capacity: 4, used: 6, free: 0, over: 2 })),
+      ).toBe('0 free of 4 (6 used), over by 2, soft limit.');
+    });
+    it('a leaf with no capacity set', () => {
+      expect(tapView.roomText(leaf({ capacity: null, free: null, used: 1 }))).toBe(
+        'Capacity not set (1 used).',
+      );
+    });
+    it('a container counts places without a capacity set, singular and plural', () => {
+      const box = { ...leaf(), leaf: false, type: 'container', capacity_mode: null };
+      expect(
+        tapView.roomText({ ...box, capacity: 137, used: 7, free: 135, capacity_unset: 1 }),
+      ).toBe('135 free of 137 (7 used), 1 place without capacity set.');
+      expect(
+        tapView.roomText({ ...box, capacity: 137, used: 7, free: 135, capacity_unset: 14 }),
+      ).toBe('135 free of 137 (7 used), 14 places without capacity set.');
+      expect(
+        tapView.roomText({ ...box, capacity: null, free: null, used: 3, capacity_unset: 1 }),
+      ).toBe('1 place without capacity set (3 used).');
+      expect(
+        tapView.roomText({ ...box, capacity: null, free: null, used: 3, capacity_unset: 2 }),
+      ).toBe('2 places without capacity set (3 used).');
+    });
   });
 
   it('accepts a clip with no place and a container answer, and refuses anything else', () => {
@@ -253,22 +342,90 @@ describe('tap page wording (tapview.js)', () => {
 
   it('never offers a printer slot for a clip move', () => {
     const shelf = tapView.findNode(tree, 'shelf-2');
-    if (!shelf) throw new Error('missing');
+    const slot = tapView.findNode(tree, 'slot-1');
+    if (!shelf || !slot) throw new Error('missing');
     expect(tapView.takesClips(shelf)).toBe(true);
-    expect(tapView.takesClips({ ...shelf, type: 'active_use' })).toBe(false);
+    expect(tapView.takesClips(slot)).toBe(false);
     expect(tapView.takesClips({ ...shelf, leaf: false })).toBe(false);
   });
 
-  it('says when nothing inside has room, and when a container was chosen without its tag', () => {
-    const held = { id: 'c', label: 'Acme PLA Red' };
-    expect(tapView.suggestionCopy({ suggestion: null }, held)).toMatchObject({
-      heading: 'Best place for Acme PLA Red',
-      targetId: null,
+  it('knows whether the held clip is still the one a view was drawn for (L1)', () => {
+    const a = { id: 'a', label: 'A' };
+    expect(tapView.heldState('a', a)).toBe('same');
+    expect(tapView.heldState('a', { id: 'b', label: 'B' })).toBe('changed');
+    expect(tapView.heldState('a', null)).toBe('gone');
+    expect(tapView.heldState(null, a)).toBe('changed');
+  });
+
+  it('knows a held clip picked up from a slot, from the tree only (L3)', () => {
+    expect(tapView.heldInSlot({ id: 'a', label: 'A', from: 'slot-1' }, tree)).toBe(true);
+    expect(tapView.heldInSlot({ id: 'a', label: 'A', from: 'shelf-2' }, tree)).toBe(false);
+    expect(tapView.heldInSlot({ id: 'a', label: 'A', from: null }, tree)).toBe(false);
+    expect(tapView.heldInSlot(null, tree)).toBe(false);
+  });
+
+  const suggestion: Suggestion = {
+    location_id: 'shelf-2',
+    name: 'Shelf 2',
+    free: 6,
+    capacity_mode: 'hard',
+    reason: 'most_free',
+  };
+  const held = { id: 'c', label: 'Acme PLA Red' };
+
+  it('a held clip loaded in a slot: says so, no target and no Choose (L3)', () => {
+    const copy = tapView.suggestionCopy({ suggestion: null, held_clip_used: true }, held, {
+      inSlot: true,
     });
-    expect(tapView.suggestionCopy({ suggestion: null }, null).text).toBe(
+    expect(T(copy.text)).toBe(
+      'Acme PLA Red is loaded in a printer slot. Unload it from the printer first; until then it cannot be moved here.',
+    );
+    expect(copy.targetId).toBeNull();
+    expect(copy.canChoose).toBe(false);
+  });
+
+  it('never presents the suggestion as for the held clip when the API did not use it (L2)', () => {
+    const copy = tapView.suggestionCopy({ suggestion, held_clip_used: false }, held);
+    expect(T(copy.heading)).toBe('Most room');
+    expect(T(copy.text)).not.toContain('Best place');
+    expect(T(copy.text)).toContain(
+      'The clip you are holding, Acme PLA Red, was not found here. Tap its tag again to hold it.',
+    );
+    expect(T(copy.text)).not.toContain('Hold a clip first');
+    expect(copy.canChoose).toBe(false);
+    const none = tapView.suggestionCopy({ suggestion: null, held_clip_used: false }, held);
+    expect(T(none.heading)).toBe('Most room');
+    expect(T(none.text)).toContain('was not found here');
+    expect(none.canChoose).toBe(false);
+  });
+
+  it('says when nothing inside has room, and when a container was chosen without its tag', () => {
+    const used = tapView.suggestionCopy({ suggestion: null, held_clip_used: true }, held);
+    expect(T(used.heading)).toBe('Best place for Acme PLA Red');
+    expect(used).toMatchObject({ targetId: null, canChoose: true });
+    expect(T(tapView.suggestionCopy({ suggestion: null, held_clip_used: false }, null).text)).toBe(
       'No place inside has a capacity set and room.',
     );
-    expect(tapView.suggestionCopy({ suggestion: null }, held, true).targetId).toBeNull();
+    const browsed = tapView.suggestionCopy({ suggestion: null }, held, { browsed: true });
+    expect(browsed).toMatchObject({ targetId: null, canChoose: true });
+    expect(
+      tapView.suggestionCopy({ suggestion: null }, held, { browsed: true, inSlot: true }).canChoose,
+    ).toBe(false);
+  });
+
+  it('gives each Choose a distinct name: the parent is added when two places share a name', () => {
+    const inside = [leaf(), leaf({ id: 'garage.shelf-2' }), leaf({ id: 'slot-1', name: 'Slot 1' })];
+    const rows = tapView.insideRows(inside, 'garage.shelf-2', tree);
+    expect(rows.map((r) => T(r.label))).toEqual([
+      'Choose Shelf 2 in Closet',
+      'Choose Shelf 2 in Garage',
+      'Choose Slot 1',
+    ]);
+    expect(rows.map((r) => r.suggested)).toEqual([false, true, false]);
+    // Room comes from the tree node when there is one.
+    expect(T(rows[1]?.text ?? [])).toBe('Shelf 2: 10 free of 10 (0 used), hard limit.');
+    // The suggested button's accessible name starts with its visible words (label in name).
+    expect(T(tapView.suggestedLabel('Shelf 2'))).toBe('Choose this place, Shelf 2 (suggested)');
   });
 });
 
@@ -282,13 +439,46 @@ describe('the container suggestion on the page is the API’s', () => {
     if (!suggestion) throw new Error('expected a suggestion');
     const copy = tapView.suggestionCopy(view, { id: clipId, label: 'Acme PLA Red' });
     expect(copy.targetId).toBe(suggestion.location_id);
-    expect(copy.text).toContain(`Suggested: ${suggestion.name} (`);
-    expect(copy.text).toContain('only a suggestion');
+    expect(copy.canChoose).toBe(true);
+    expect(T(copy.text)).toContain(`Suggested: ${suggestion.name} (`);
+    expect(T(copy.text)).toContain('only a suggestion');
     const rows = tapView.insideRows(view.inside, copy.targetId);
     expect(rows.map((r) => r.place.id)).toEqual(view.inside.map((p) => p.id));
     expect(rows.filter((r) => r.suggested).map((r) => r.place.id)).toEqual([
       suggestion.location_id,
     ]);
+  });
+
+  it('keeps the API’s choice when it is not the place with the most room (no re-ranking)', async () => {
+    const { getJson, clipId, clip } = await setup();
+    // Another clip of the same filament on a 10-place shelf: the API prefers it over 12-place shelves.
+    clip('loc2.shelf-1');
+    const view = (await getJson(`/api/v1/tags/${ACTIVE_TAG}?held=${clipId}`)) as ContainerView;
+    expect(view.suggestion).toMatchObject({ location_id: 'loc2.shelf-1', reason: 'same_filament' });
+    const roomiest = Math.max(...view.inside.map((p) => p.free ?? 0));
+    expect(view.suggestion?.free).toBeLessThan(roomiest);
+    const copy = tapView.suggestionCopy(view, { id: clipId, label: 'Acme PLA Red' });
+    expect(copy.targetId).toBe('loc2.shelf-1');
+    expect(T(copy.text)).toContain(
+      'Suggested: Location 2 - Shelf 1 (9 places free, hard limit), because the same filament is already there.',
+    );
+    expect(
+      tapView
+        .insideRows(view.inside, copy.targetId)
+        .filter((r) => r.suggested)
+        .map((r) => r.place.id),
+    ).toEqual(['loc2.shelf-1']);
+  });
+
+  it('a held clip the server does not know: not presented as ranked for it, and no Choose (L2)', async () => {
+    const { getJson } = await setup();
+    const unknownClip = uuid();
+    const view = (await getJson(`/api/v1/tags/${ACTIVE_TAG}?held=${unknownClip}`)) as ContainerView;
+    expect(view.held_clip_used).toBe(false);
+    const copy = tapView.suggestionCopy(view, { id: unknownClip, label: 'Acme PLA Red' });
+    expect(T(copy.heading)).toBe('Most room');
+    expect(T(copy.text)).toContain('was not found here. Tap its tag again to hold it.');
+    expect(copy.canChoose).toBe(false);
   });
 
   it('with nothing held, shows the API’s most-room suggestion and offers no move', async () => {
@@ -297,8 +487,9 @@ describe('the container suggestion on the page is the API’s', () => {
     const suggestion = view.suggestion;
     if (!suggestion) throw new Error('expected a suggestion');
     const copy = tapView.suggestionCopy(view, null);
-    expect(copy.heading).toBe('Most room');
+    expect(T(copy.heading)).toBe('Most room');
     expect(copy.targetId).toBe(suggestion.location_id);
+    expect(copy.canChoose).toBe(false);
   });
 
   it('builds the clip’s chain from the tree endpoint alone (no new request)', async () => {
@@ -318,7 +509,7 @@ describe('the container suggestion on the page is the API’s', () => {
       clip: { location_id: string | null };
     };
     expect(tapView.validView(none)).toBe(true);
-    expect(tapView.clipPlaceText(tapView.pathTo(tree.locations, none.clip.location_id))).toBe(
+    expect(T(tapView.clipPlaceText(tapView.pathTo(tree.locations, none.clip.location_id)))).toBe(
       'No place is recorded for this clip.',
     );
   });
