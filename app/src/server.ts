@@ -42,7 +42,17 @@ try {
   db.close();
   process.exit(1);
 }
-const sql = sqlFromDatabase(db);
+const sql = sqlFromDatabase(db, {
+  // A rollback failed inside a transaction, so the adapter closed the connection (SPOOL-199). Exit
+  // rather than serve errors: the supervisor restarts the process and the startup checks run again.
+  // One line, no stack and no SQL text.
+  onUnusable: () => {
+    console.error(
+      'database connection is unusable after a failed rollback; exiting so the server can be restarted',
+    );
+    process.exit(1);
+  },
+});
 
 // The page a tag opens (ADR-0001 phase 1: this server is the resolver). Off unless an instance code is set.
 const shellPath = resolve(import.meta.dirname, '../public/tap.html');

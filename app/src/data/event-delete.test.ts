@@ -7,7 +7,9 @@ import { describe, expect, it } from 'vitest';
 import { Scope } from '../auth/principal.ts';
 import { runMigrations } from '../db/migrate.ts';
 import { DatabaseIntegrityError, verifyDatabase } from '../db/integrity.ts';
-import type { Sql, Statement } from '../db/sql.ts';
+import type { Sql, SqlParam, Statement } from '../db/sql.ts';
+import { sqlFromDatabase } from '../db/sqlite.ts';
+import { StatementNotAllowedError } from '../db/statement-guard.ts';
 import { importSeed } from '../seed/import.ts';
 import {
   memoryDatabase,
@@ -115,6 +117,35 @@ const closeGrant = (tenant: string): Statement => ({
   params: [tenant],
 });
 
+/**
+ * Since SPOOL-199 the adapter refuses pragmas, schema statements and REPLACE before they run. The
+ * database's own defences behind it (triggers, the closing check) are still tested: this adapter runs
+ * on a connection where the allowed placeholder `slipped(i)` executes `texts[i]` instead, standing for
+ * a statement that got past the allow-list. Test-only; the real adapter has no such path.
+ */
+function adapterPastTheAllowList(db: Db, texts: readonly string[]): Sql {
+  const placeholder = /^SELECT 'slipped (\d+)'$/;
+  const connection = new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare') {
+        return (query: string) => {
+          const m = placeholder.exec(query);
+          return target.prepare(m ? (texts[Number(m[1])] ?? query) : query);
+        };
+      }
+      const value: unknown = Reflect.get(target, key);
+      return typeof value === 'function'
+        ? (value as (...a: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
+  return sqlFromDatabase(connection);
+}
+const slipped = (i: number, params?: SqlParam[]): Statement => ({
+  query: `SELECT 'slipped ${String(i)}'`,
+  ...(params ? { params } : {}),
+});
+
 describe('the event log outside a guarded batch', () => {
   it('still refuses DELETE and UPDATE on events', async () => {
     const { db, sql } = await setup();
@@ -134,13 +165,14 @@ describe('the event log outside a guarded batch', () => {
       .all(TENANT_A) as { id: string }[];
     const id = first?.id ?? '';
     for (const verb of ['INSERT OR REPLACE INTO', 'REPLACE INTO']) {
+      const query = `${verb} event (tenant_id, id, type) VALUES (?, ?, 'retire')`;
+      // The adapter refuses REPLACE outright (SPOOL-199)...
+      await expect(sql.batch([{ query, params: [TENANT_A, id] }])).rejects.toBeInstanceOf(
+        StatementNotAllowedError,
+      );
+      // ...and the database still refuses it when it gets past the adapter.
       await expect(
-        sql.batch([
-          {
-            query: `${verb} event (tenant_id, id, type) VALUES (?, ?, 'retire')`,
-            params: [TENANT_A, id],
-          },
-        ]),
+        adapterPastTheAllowList(db, [query]).batch([slipped(0, [TENANT_A, id])]),
       ).rejects.toThrow(/append-only/);
     }
     expect(db.prepare('SELECT type FROM event WHERE id = ?').get(id)).toMatchObject({
@@ -345,6 +377,12 @@ describe('the closing check does not depend on pragmas (review round 1)', () => 
     const { db, sql } = await setup();
     await expect(
       sql.batch([openGrant(TENANT_A), { query: 'PRAGMA defer_foreign_keys = OFF' }]),
+    ).rejects.toBeInstanceOf(StatementNotAllowedError);
+    await expect(
+      adapterPastTheAllowList(db, ['PRAGMA defer_foreign_keys = OFF']).batch([
+        openGrant(TENANT_A),
+        slipped(0),
+      ]),
     ).rejects.toThrow(/grant left open/);
     expect(grants(db)).toBe(0);
     expect(() => db.prepare('DELETE FROM event').run()).toThrow(/append-only/);
@@ -352,7 +390,9 @@ describe('the closing check does not depend on pragmas (review round 1)', () => 
 
   it('refuses a grant opened after foreign keys were turned off', async () => {
     const { db, sql } = await setup();
-    await sql.batch([{ query: 'PRAGMA foreign_keys = OFF' }]);
+    await expect(sql.batch([{ query: 'PRAGMA foreign_keys = OFF' }])).rejects.toBeInstanceOf(
+      StatementNotAllowedError,
+    );
     db.exec('PRAGMA foreign_keys = OFF');
     await expect(sql.batch([openGrant(TENANT_A)])).rejects.toThrow(/grant left open/);
     expect(grants(db)).toBe(0);
@@ -361,14 +401,18 @@ describe('the closing check does not depend on pragmas (review round 1)', () => 
 
   it('refuses a grant that satisfies its foreign key while check constraints are ignored', async () => {
     const { db, sql } = await setup();
+    const keepGrant = {
+      query:
+        "INSERT INTO event_delete_grant (tenant_id, scope, must_close) VALUES (?, 'tenant', 'loc1.shelf-1')",
+      params: [TENANT_A],
+    };
     await expect(
-      sql.batch([
-        { query: 'PRAGMA ignore_check_constraints = ON' },
-        {
-          query:
-            "INSERT INTO event_delete_grant (tenant_id, scope, must_close) VALUES (?, 'tenant', 'loc1.shelf-1')",
-          params: [TENANT_A],
-        },
+      sql.batch([{ query: 'PRAGMA ignore_check_constraints = ON' }, keepGrant]),
+    ).rejects.toBeInstanceOf(StatementNotAllowedError);
+    await expect(
+      adapterPastTheAllowList(db, ['PRAGMA ignore_check_constraints = ON']).batch([
+        slipped(0),
+        keepGrant,
       ]),
     ).rejects.toThrow(/grant left open/);
     db.exec('PRAGMA ignore_check_constraints = OFF');
@@ -428,24 +472,30 @@ describe('the closing check does not depend on pragmas (review round 1)', () => 
 describe('temporary tables cannot stand in for the real ones (review round 2)', () => {
   it('a temporary grant table does not hide an open grant from the closing check', async () => {
     const { db, sql } = await setup();
+    const texts = [
+      'CREATE TEMP TABLE event_delete_grant (tenant_id TEXT)',
+      'PRAGMA defer_foreign_keys = OFF',
+    ];
     await expect(
-      sql.batch([
-        openGrant(TENANT_A),
-        { query: 'CREATE TEMP TABLE event_delete_grant (tenant_id TEXT)' },
-        { query: 'PRAGMA defer_foreign_keys = OFF' },
-      ]),
+      sql.batch([openGrant(TENANT_A), ...texts.map((query) => ({ query }))]),
+    ).rejects.toBeInstanceOf(StatementNotAllowedError);
+    await expect(
+      adapterPastTheAllowList(db, texts).batch([openGrant(TENANT_A), slipped(0), slipped(1)]),
     ).rejects.toThrow(/grant left open/);
     expect(grants(db)).toBe(0);
   });
 
   it('a temporary closer table does not swallow the closing check', async () => {
     const { db, sql } = await setup();
+    const texts = [
+      'CREATE TEMP TABLE event_delete_grant_closed (tenant_id TEXT, x INTEGER)',
+      'PRAGMA defer_foreign_keys = OFF',
+    ];
     await expect(
-      sql.batch([
-        openGrant(TENANT_A),
-        { query: 'CREATE TEMP TABLE event_delete_grant_closed (tenant_id TEXT, x INTEGER)' },
-        { query: 'PRAGMA defer_foreign_keys = OFF' },
-      ]),
+      sql.batch([openGrant(TENANT_A), ...texts.map((query) => ({ query }))]),
+    ).rejects.toBeInstanceOf(StatementNotAllowedError);
+    await expect(
+      adapterPastTheAllowList(db, texts).batch([openGrant(TENANT_A), slipped(0), slipped(1)]),
     ).rejects.toThrow(/grant left open/);
     expect(grants(db)).toBe(0);
   });
@@ -485,6 +535,115 @@ describe('temporary tables cannot stand in for the real ones (review round 2)', 
       verifyDatabase(db);
     }).toThrow(/grant was left open/);
   });
+});
+
+describe('the adapter refuses the review round 2 bypasses before they run (SPOOL-199)', () => {
+  const pragma = (db: Db, name: string): unknown =>
+    Object.values(db.prepare(`PRAGMA ${name}`).get() as object)[0];
+  const has = (db: Db, schema: 'main' | 'temp', type: string, name: string): boolean =>
+    db
+      .prepare(`SELECT 1 AS n FROM ${schema}.sqlite_master WHERE type = ? AND name = ?`)
+      .get(type, name) !== undefined;
+  const cases: {
+    name: string;
+    query: string;
+    /** Only `all()` is tested: the same statement in a batch is the sanctioned guarded path. */
+    readOnly?: true;
+    unchanged: (db: Db) => void;
+  }[] = [
+    {
+      name: 'turning deferred foreign keys off',
+      query: 'PRAGMA defer_foreign_keys = OFF',
+      unchanged: (db) => {
+        expect(pragma(db, 'defer_foreign_keys')).toBe(0);
+      },
+    },
+    {
+      name: 'turning foreign keys off',
+      query: 'PRAGMA foreign_keys = OFF',
+      unchanged: (db) => {
+        expect(pragma(db, 'foreign_keys')).toBe(1);
+      },
+    },
+    {
+      name: 'ignoring check constraints',
+      query: 'PRAGMA ignore_check_constraints = ON',
+      unchanged: (db) => {
+        expect(pragma(db, 'ignore_check_constraints')).toBe(0);
+      },
+    },
+    {
+      name: 'a temporary table named like the grant table',
+      query: 'CREATE TEMP TABLE event_delete_grant (tenant_id TEXT, scope TEXT)',
+      unchanged: (db) => {
+        expect(has(db, 'temp', 'table', 'event_delete_grant')).toBe(false);
+      },
+    },
+    {
+      name: 'dropping the trigger that refuses an open grant',
+      query: 'DROP TRIGGER event_delete_grant_left_open',
+      unchanged: (db) => {
+        expect(has(db, 'main', 'trigger', 'event_delete_grant_left_open')).toBe(true);
+      },
+    },
+    {
+      name: 'dropping the closer table',
+      query: 'DROP TABLE event_delete_grant_closed',
+      unchanged: (db) => {
+        expect(has(db, 'main', 'table', 'event_delete_grant_closed')).toBe(true);
+      },
+    },
+    {
+      name: 'renaming the closer table',
+      query: 'ALTER TABLE event_delete_grant_closed RENAME TO kept_open',
+      unchanged: (db) => {
+        expect(has(db, 'main', 'table', 'event_delete_grant_closed')).toBe(true);
+      },
+    },
+    {
+      name: 'a writable schema',
+      query: 'PRAGMA writable_schema = ON',
+      unchanged: (db) => {
+        expect(pragma(db, 'writable_schema')).toBe(0);
+      },
+    },
+    {
+      name: 'attaching another database',
+      query: "ATTACH DATABASE ':memory:' AS other",
+      unchanged: (db) => {
+        expect(
+          (db.prepare('PRAGMA database_list').all() as { name: string }[]).map((d) => d.name),
+        ).not.toContain('other');
+      },
+    },
+    {
+      name: 'opening a grant through all()',
+      query: "INSERT INTO event_delete_grant (tenant_id, scope) VALUES ('tenant-a', 'tenant')",
+      readOnly: true,
+      unchanged: () => undefined,
+    },
+  ];
+  for (const c of cases) {
+    it(`refuses ${c.name} before it runs`, async () => {
+      const { db, sql } = await setup();
+      await expect(sql.all(c.query)).rejects.toBeInstanceOf(StatementNotAllowedError);
+      if (!c.readOnly) {
+        // The grant in front of it is not opened either: a refused batch runs nothing.
+        await expect(sql.batch([openGrant(TENANT_A), { query: c.query }])).rejects.toBeInstanceOf(
+          StatementNotAllowedError,
+        );
+      }
+      c.unchanged(db);
+      expect(grants(db)).toBe(0);
+      expect(db.isTransaction).toBe(false);
+      expect(() => {
+        verifyDatabase(db);
+      }).not.toThrow();
+      expect(events(db, TENANT_A)).toBe(2);
+      // The connection is still usable afterwards.
+      await expect(sql.all('SELECT 1 AS n')).resolves.toEqual([{ n: 1 }]);
+    });
+  }
 });
 
 describe('deleteTenant', () => {
