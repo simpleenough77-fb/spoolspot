@@ -96,10 +96,10 @@ describe('migration 0005: a container never becomes a leaf', () => {
     populate(db, TENANT_A);
     const before = snapshot(db);
     for (const id of ['room', 'box']) {
-      // Either rule's message: both triggers refuse, and which runs first is SQLite's choice.
+      // 0005 answers first; 0001's children rule would also refuse these.
       expect(() => {
         toLeaf(db, TENANT_A, id);
-      }, id).toThrow(/stays? a container/);
+      }, id).toThrow(REFUSED);
     }
     expect(snapshot(db)).toEqual(before);
   });
@@ -213,7 +213,7 @@ describe('existing databases: leaves with a registry-only tag are kept and liste
     toLeaf(db, TENANT_A, 'empty', 'clip_storage');
     expect(() => {
       toLeaf(db, TENANT_A, 'room');
-    }).toThrow(/stays? a container/);
+    }).toThrow(REFUSED);
   });
 
   it('lists nothing on a database that follows the rule', () => {
