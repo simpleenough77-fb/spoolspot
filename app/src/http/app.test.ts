@@ -50,6 +50,7 @@ const stubData = (partial: Partial<ScopedData>): ScopedData => ({
   stockAt: unused,
   stockOf: unused,
   adjustStock: unused,
+  claimTag: unused,
   ...partial,
 });
 
