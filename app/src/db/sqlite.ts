@@ -5,6 +5,7 @@
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { GRANT_CLOSED_CHECK, hasGrantCloser } from './integrity.ts';
 import type { Sql, SqlParam, Statement } from './sql.ts';
 
 function attempt<T>(fn: () => T): Promise<T> {
@@ -58,6 +59,9 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
           for (const s of statements) {
             changes.push(Number(db.prepare(s.query).run(...bind(s.params)).changes));
           }
+          // Last statement of every batch (SPOOL-194): an event delete grant still open aborts the
+          // batch. Here, not in callers, so no batch can forget it. Skipped before migration 0003.
+          if (hasGrantCloser(db)) db.prepare(GRANT_CLOSED_CHECK.query).run();
           db.exec('COMMIT');
           return changes;
         } catch (error) {

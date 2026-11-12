@@ -5,6 +5,8 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Scope } from '../auth/principal.ts';
+import { runMigrations } from '../db/migrate.ts';
+import { DatabaseIntegrityError, verifyDatabase } from '../db/integrity.ts';
 import type { Sql, Statement } from '../db/sql.ts';
 import { importSeed } from '../seed/import.ts';
 import {
@@ -222,14 +224,30 @@ describe('a grant is tenant-specific and scoped', () => {
 });
 
 describe('a grant never outlives its batch', () => {
-  it('a batch that leaves its grant open fails at commit and deletes nothing', async () => {
+  it('a batch that leaves its grant open fails and deletes nothing', async () => {
     const { db, sql } = await setup();
     await expect(
       sql.batch([
         openGrant(TENANT_A),
         { query: 'DELETE FROM event WHERE tenant_id = ?', params: [TENANT_A] },
       ]),
-    ).rejects.toThrow(/FOREIGN KEY/);
+    ).rejects.toThrow(/grant left open/);
+    expect(events(db, TENANT_A)).toBe(2);
+    expect(grants(db)).toBe(0);
+  });
+
+  it('the deferred foreign key alone also fails a commit that leaves a grant open', async () => {
+    const { db } = await setup();
+    // A transaction that skips the closing check: the second closer still stops it at COMMIT.
+    db.exec('BEGIN');
+    db.prepare("INSERT INTO event_delete_grant (tenant_id, scope) VALUES (?, 'tenant')").run(
+      TENANT_A,
+    );
+    db.prepare('DELETE FROM event WHERE tenant_id = ?').run(TENANT_A);
+    expect(() => {
+      db.exec('COMMIT');
+    }).toThrow(/FOREIGN KEY/);
+    db.exec('ROLLBACK');
     expect(events(db, TENANT_A)).toBe(2);
     expect(grants(db)).toBe(0);
   });
@@ -254,6 +272,74 @@ describe('a grant never outlives its batch', () => {
     expect(() => db.prepare('DELETE FROM event WHERE tenant_id = ?').run(TENANT_A)).toThrow(
       /append-only/,
     );
+  });
+});
+
+describe('the closing check does not depend on pragmas (review round 1)', () => {
+  it('refuses a batch that turns deferred foreign keys off to keep a grant', async () => {
+    const { db, sql } = await setup();
+    await expect(
+      sql.batch([openGrant(TENANT_A), { query: 'PRAGMA defer_foreign_keys = OFF' }]),
+    ).rejects.toThrow(/grant left open/);
+    expect(grants(db)).toBe(0);
+    expect(() => db.prepare('DELETE FROM event').run()).toThrow(/append-only/);
+  });
+
+  it('refuses a grant opened after foreign keys were turned off', async () => {
+    const { db, sql } = await setup();
+    await sql.batch([{ query: 'PRAGMA foreign_keys = OFF' }]);
+    db.exec('PRAGMA foreign_keys = OFF');
+    await expect(sql.batch([openGrant(TENANT_A)])).rejects.toThrow(/grant left open/);
+    expect(grants(db)).toBe(0);
+    db.exec('PRAGMA foreign_keys = ON');
+  });
+
+  it('refuses a grant that satisfies its foreign key while check constraints are ignored', async () => {
+    const { db, sql } = await setup();
+    await expect(
+      sql.batch([
+        { query: 'PRAGMA ignore_check_constraints = ON' },
+        {
+          query:
+            "INSERT INTO event_delete_grant (tenant_id, scope, must_close) VALUES (?, 'tenant', 'loc1.shelf-1')",
+          params: [TENANT_A],
+        },
+      ]),
+    ).rejects.toThrow(/grant left open/);
+    db.exec('PRAGMA ignore_check_constraints = OFF');
+    expect(grants(db)).toBe(0);
+  });
+
+  it('still lets a proper open, delete and close batch through', async () => {
+    const { db, sql } = await setup();
+    expect(await sql.batch(guardedEventDelete(TENANT_A, { scope: 'tenant' }))).toEqual([1, 2, 1]);
+    expect(events(db, TENANT_A)).toBe(0);
+    expect(events(db, TENANT_B)).toBe(2);
+  });
+
+  it('refuses to start on a database with a grant left behind, or with foreign keys off', async () => {
+    const { db } = await setup();
+    // A grant written outside any batch, with foreign keys off, is the one case nothing can stop at
+    // write time; it is caught before the database is used again.
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.prepare("INSERT INTO event_delete_grant (tenant_id, scope) VALUES (?, 'tenant')").run(
+      TENANT_A,
+    );
+    expect(() => {
+      verifyDatabase(db);
+    }).toThrow(/foreign keys are not enforced/);
+    db.exec('PRAGMA foreign_keys = ON');
+    expect(() => {
+      verifyDatabase(db);
+    }).toThrow(DatabaseIntegrityError);
+    expect(() => runMigrations(db)).toThrow(/grant was left open/);
+  });
+
+  it('accepts a clean database', () => {
+    const { db } = memoryDatabase();
+    expect(() => {
+      verifyDatabase(db);
+    }).not.toThrow();
   });
 });
 
@@ -314,6 +400,7 @@ describe('who can open a grant', () => {
     const allowed = [
       'app/src/data/event-delete.ts',
       'app/src/data/tenant-delete.ts',
+      'app/src/db/integrity.ts',
       'app/src/seed/demo.ts',
     ];
     const files: string[] = [];

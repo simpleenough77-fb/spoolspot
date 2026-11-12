@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { guardedEventDelete } from '../data/event-delete.ts';
+import { GRANT_CLOSED_CHECK } from '../db/integrity.ts';
 
 /** Marks every demo row: the filament's manufacturer, and the "DEM0" start of each clip tag. */
 export const DEMO_MANUFACTURER = 'SpoolSpot demo';
@@ -149,6 +150,8 @@ export function removeDemo(db: DatabaseSync, tenantId: string): number {
         'UPDATE location SET capacity = NULL WHERE tenant_id = ? AND id = ? AND capacity = ?',
       ).run(tenantId, SOFT_DEMO_LOCATION, SOFT_DEMO_CAPACITY);
     }
+    // This transaction does not go through the adapter, so it runs the closing check itself, last.
+    db.prepare(GRANT_CLOSED_CHECK.query).run();
     db.exec('COMMIT');
     return Number(clips.changes);
   } catch (error) {
