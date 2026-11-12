@@ -12,7 +12,7 @@ import { createMemorySessionStore } from './auth/session.ts';
 import { isLoopback, loadConfig } from './config.ts';
 import { createScopedData } from './data/scoped.ts';
 import { runMigrations } from './db/migrate.ts';
-import { openDatabase, sqlFromDatabase } from './db/sqlite.ts';
+import { describeCause, openDatabase, sqlFromDatabase } from './db/sqlite.ts';
 import { createApp } from './http/app.ts';
 import { clientKeyFor } from './http/rate-limit.ts';
 
@@ -45,10 +45,10 @@ try {
 const sql = sqlFromDatabase(db, {
   // A rollback failed inside a transaction, so the adapter closed the connection (SPOOL-199). Exit
   // rather than serve errors: the supervisor restarts the process and the startup checks run again.
-  // One line, no stack and no SQL text.
-  onUnusable: () => {
+  // One line: the cause's class and SQLite codes only, no message, stack or SQL text.
+  onUnusable: (cause) => {
     console.error(
-      'database connection is unusable after a failed rollback; exiting so the server can be restarted',
+      `database connection is unusable after a failed rollback (${describeCause(cause)}); exiting so the server can be restarted`,
     );
     process.exit(1);
   },

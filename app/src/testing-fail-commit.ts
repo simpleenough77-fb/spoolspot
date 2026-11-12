@@ -10,6 +10,13 @@ const original: (this: DatabaseSync, text: string) => void = Reflect.get(
   'exec',
 );
 Reflect.set(DatabaseSync.prototype, 'exec', function (this: DatabaseSync, text: string): void {
-  if (text === 'COMMIT' || text === 'ROLLBACK') throw new Error('disk I/O error (simulated)');
+  if (text === 'COMMIT' || text === 'ROLLBACK') {
+    // Shaped like a node:sqlite error (SQLITE_IOERR = 10). The message carries a marker the test
+    // checks never reaches the log.
+    throw Object.assign(new Error('disk I/O error (simulated) MESSAGE-MARKER-7f3a'), {
+      code: 'ERR_SQLITE_ERROR',
+      errcode: 10,
+    });
+  }
   original.call(this, text);
 });

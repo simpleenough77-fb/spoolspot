@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { memoryDatabase } from '../testing.ts';
 import { MIGRATIONS_DIR, runMigrations } from './migrate.ts';
 import { GrantCloseCheckError } from './integrity.ts';
-import { DatabaseUnusableError, openDatabase, sqlFromDatabase } from './sqlite.ts';
+import { DatabaseUnusableError, describeCause, openDatabase, sqlFromDatabase } from './sqlite.ts';
 import { StatementNotAllowedError } from './statement-guard.ts';
 
 describe('sql adapter', () => {
@@ -51,7 +51,13 @@ describe('sql adapter', () => {
         },
       });
       let unusableCalls = 0;
-      const sql = sqlFromDatabase(broken, { onUnusable: () => (unusableCalls += 1) });
+      let cause: unknown;
+      const sql = sqlFromDatabase(broken, {
+        onUnusable: (error) => {
+          unusableCalls += 1;
+          cause = error;
+        },
+      });
       await expect(
         sql.batch([
           { query: "INSERT INTO tenant_settings (tenant_id) VALUES ('half-done')" },
@@ -63,6 +69,8 @@ describe('sql adapter', () => {
       expect(real.isOpen).toBe(false);
       // Told once, when the connection was dropped (the server exits there, SPOOL-199).
       expect(unusableCalls).toBe(1);
+      // With the error that started it (the failed INSERT), not the rollback failure.
+      expect(describeCause(cause)).toBe('cause Error, code ERR_SQLITE_ERROR, errcode 1');
       const again = openDatabase(path);
       expect(again.prepare('SELECT COUNT(*) AS n FROM tenant_settings').get()).toMatchObject({
         n: 0,
@@ -212,5 +220,22 @@ describe('sql adapter', () => {
     await expect(
       sql.all('WITH s AS (SELECT tenant_id FROM tenant_settings) SELECT COUNT(*) AS n FROM s'),
     ).resolves.toEqual([{ n: 1 }]);
+  });
+
+  it('describes a cause by class and SQLite codes only, never its message', () => {
+    const sqliteError = Object.assign(
+      new Error("UNIQUE constraint failed: tag.tag_id 'ABCDEFGHJKMN' INSERT INTO tag"),
+      { code: 'ERR_SQLITE_ERROR', errcode: 2067 },
+    );
+    const line = describeCause(sqliteError);
+    expect(line).toBe('cause Error, code ERR_SQLITE_ERROR, errcode 2067');
+    expect(line).not.toMatch(/UNIQUE|ABCDEFGHJKMN|INSERT|tag/);
+    class OddError extends Error {
+      override name = 'Odd name; DROP TABLE x';
+    }
+    expect(
+      describeCause(Object.assign(new OddError('x'), { code: 'not safe; x', errcode: 1.5 })),
+    ).toBe('cause Error');
+    expect(describeCause('a string with SELECT 1')).toBe('cause unknown');
   });
 });
