@@ -9,12 +9,13 @@
 --
 -- The rule reads only the row being changed (OLD and NEW), never another row, so it cannot be affected
 -- by another tenant's row with the same id. The other direction, a leaf becoming a container, is
--- unchanged (0001: refused while the leaf holds stock or clips).
+-- unchanged: 0001 refuses it while the leaf holds stock or clips, and otherwise the leaf's tag_id must
+-- be cleared, so 0002's trigger (kept below) drops its tag.
 --
 -- Not covered: a REPLACE write on this table (the REPLACE statement, or the OR REPLACE conflict clause)
--- removes the old row without firing UPDATE or DELETE triggers, so it can still swap a container for a
--- leaf of the same id. The SQL adapter refuses every REPLACE write (SPOOL-199) and 0002 says never to
--- use one on location.
+-- removes the old row without firing UPDATE or DELETE triggers while recursive_triggers is off (the
+-- SQLite default; nothing here sets it), so it can still swap a container for a leaf of the same id.
+-- The SQL adapter refuses every REPLACE write (SPOOL-199) and 0002 says never to use one on location.
 --
 -- Additive only: existing rows are not changed. A database that already holds a leaf whose registry
 -- row is not shown by its tag_id column (a container turned into a leaf before this migration) keeps
@@ -36,14 +37,21 @@ END;
 -- the parent): no tag trigger runs on it, so the place's tag and every tag inside it stay as they are.
 -- A rename (an id change) used to drop a container's tag: 0002's trigger deletes the registry row of
 -- the old id and inserts one only from tag_id, which a container never has. A leaf's tag followed the
--- id. The trigger below is 0002's, same name, with one statement added in front: within one tenant, a
--- registry row that the tag_id column does not carry (a container's tag, or a leaf left out of step
--- before rule 1) is re-pointed to the new id. The re-point runs before the delete inside one trigger
--- body, so the order does not depend on which of several triggers SQLite runs first. The tag ID itself
--- is never changed, so a rename frees no ID. Everything else is as in 0002: a change of tag_id swaps
--- the row; a change of tenant_id drops the old tenant's row and adds one only from tag_id.
+-- id. The trigger below is 0002's, same name, with one statement added in front: when the id changes
+-- within one tenant and tag_id is NULL before and after, the place's registry row (a container's tag,
+-- or a leaf left out of step before rule 1) is re-pointed to the new id. Its tag ID is not changed, so
+-- a rename alone frees no ID. The re-point runs before the delete inside one trigger body, so the order
+-- does not depend on which of several triggers SQLite runs first. Everything else is as in 0002: a
+-- change of tag_id (on its own or with the id) deletes the place's registry row and adds one only from
+-- the new tag_id, so clearing tag_id drops the tag, and setting it on a leaf left out of step replaces
+-- that leaf's registry-only tag; a change of tenant_id drops the old tenant's row and adds one only
+-- from tag_id.
+-- Renames with OR IGNORE or OR REPLACE conflict handling are not supported: the trigger body inherits
+-- the outer statement's conflict clause, so the re-point can be skipped and the tag dropped. The adapter
+-- refuses REPLACE writes, and no application path renames a place.
 -- A rename of a place that anything refers to (a child, a clip, a stock line, an event) is refused by
--- the foreign keys from 0001, which have no ON UPDATE action.
+-- the foreign keys from 0001, which have no ON UPDATE action (foreign keys are enforced: the database
+-- is refused at startup otherwise).
 DROP TRIGGER location_tag_update;
 
 CREATE TRIGGER location_tag_update
