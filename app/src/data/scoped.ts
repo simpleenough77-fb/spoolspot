@@ -14,6 +14,7 @@ import {
   type PlacementCheck,
   type PlacementSuggestion,
 } from './tree.ts';
+import { eventInsert } from './events.ts';
 import { createStockOps, type StockOps } from './stock.ts';
 import { normalizeTagId } from './tags.ts';
 
@@ -261,12 +262,21 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
                       WHERE k.tenant_id = d.tenant_id AND k.location_id = d.id) >= d.capacity))`;
       const guardParams = [clip.location_id, confirm ? 1 : 0, destination.id];
       await sql.batch([
-        {
-          query: `INSERT INTO event (tenant_id, id, type, clip_id, filament_id, from_location_id, to_location_id)
-                  SELECT c.tenant_id, ?, 'move', c.id, c.filament_id, c.location_id, ?
-                    FROM clip c WHERE c.tenant_id = ? AND c.id = ? AND ${guard('c')}`,
-          params: [crypto.randomUUID(), destination.id, tenantId, clip.id, ...guardParams],
-        },
+        // The guard holds only while the clip is still at clip.location_id, so `from` is that value.
+        eventInsert(
+          principal,
+          {
+            type: 'move',
+            clipId: clip.id,
+            filamentId: null,
+            fromLocationId: clip.location_id,
+            toLocationId: destination.id,
+          },
+          {
+            where: `EXISTS (SELECT 1 FROM clip c WHERE c.tenant_id = ? AND c.id = ? AND ${guard('c')})`,
+            params: [tenantId, clip.id, ...guardParams],
+          },
+        ),
         {
           query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${guard('clip')}`,
           params: [destination.id, tenantId, clip.id, ...guardParams],
