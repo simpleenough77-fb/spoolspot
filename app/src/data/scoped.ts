@@ -74,7 +74,7 @@ export type TagView =
       /**
        * The best leaf inside for the held clip. The clip's state limits the candidates (owner decision
        * 2026-11-11): on_spool to active storage only, free and spool_empty to clip storage only. Among
-       * those, the intake order: same filament (boxed or clipped), then a manufacturer preference (on
+       * those, the intake order: same filament (other clips of it; boxed stock never counts), then a manufacturer preference (on
        * clip storage only), then most free. With no clip held, most free first, any leaf but a slot.
        * Never a full leaf, a leaf with no capacity, a slot or the clip's own place. Advisory only:
        * nothing is moved. Null when nothing allowed inside has room, or when the held clip sits in a
@@ -191,15 +191,13 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     );
     const clip = clips[0];
     if (!clip) return null;
-    // The held clip's own row is not filtered out: the only place it adds is the clip's own, which
-    // `exclude` below already keeps out of every suggestion.
+    // "Same filament here" means other clips of the filament; boxed stock never counts (owner decision
+    // 2026-11-12: boxed stock does not belong on active storage). The held clip's own row is not
+    // filtered out: the only place it adds is the clip's own, which `exclude` below already keeps out.
     const same = await sql.all<{ location_id: string }>(
-      `SELECT s.location_id FROM stock_line s
-        WHERE s.tenant_id = ? AND s.filament_id = ? AND s.count > 0
-       UNION
-       SELECT k.location_id FROM clip k
+      `SELECT DISTINCT k.location_id FROM clip k
         WHERE k.tenant_id = ? AND k.filament_id = ? AND k.location_id IS NOT NULL`,
-      [tenantId, clip.filament_id, tenantId, clip.filament_id],
+      [tenantId, clip.filament_id],
     );
     const preferred = await sql.all<{ id: string }>(
       // A manufacturer preference applies to clip storage only (owner decision 2026-11-11).
@@ -270,7 +268,7 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       if (!node) return null;
       if (node.leaf) return { kind: 'location', location: locationView(node) };
       // A container tag lives only in the tag registry (SPOOL-191 decision 2) and resolves to the
-      // leaves below it. The suggestion ranks with suggestPlacements (same filament, then manufacturer
+      // leaves below it. The suggestion ranks with suggestPlacements (same filament by other clips, then manufacturer
       // preference on clip storage only, then most free); containerSuggestion then limits it by the held
       // clip's state, never offers a slot (even in a container of slots only), and offers nothing for
       // a clip sitting in a slot.

@@ -144,7 +144,7 @@ describe('container tags (SPOOL-191)', () => {
     expect(leaf.kind).toBe('location');
   });
 
-  it('suggests by the intake order for an on_spool clip: same filament, then most free', async () => {
+  it('suggests by the intake order for an on_spool clip: same filament (other clips only), then most free', async () => {
     const { data, filament, clip, boxed, db } = await setup();
     const acme = filament(TENANT_A, 'Acme');
     const other = filament(TENANT_A, 'Other');
@@ -155,21 +155,21 @@ describe('container tags (SPOOL-191)', () => {
     let view = asContainer(await scoped.tagView(ACTIVE_TAG));
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
 
-    // A stock line whose count is 0 is not "the same filament here", even on a roomier shelf.
-    boxed(TENANT_A, acme, 'loc3.shelf-1', 0);
+    // Boxed stock is not "the same filament here" (owner decision 2026-11-12: only clipped spools
+    // count), even on an active shelf with no other clip of it: the ranking stays most free.
+    boxed(TENANT_A, acme, 'loc2.shelf-4', 2);
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
     expect(view.held_clip_used).toBe(true);
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
 
-    // The same filament boxed on a small shelf wins over more room elsewhere.
-    boxed(TENANT_A, acme, 'loc2.shelf-4', 2);
+    // Another clip of the same filament on a smaller shelf wins over more room elsewhere.
+    clip(TENANT_A, acme, 'loc2.shelf-4');
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
-    expect(view.held_clip_used).toBe(true);
     expect(view.suggestion).toMatchObject({ location_id: 'loc2.shelf-4', reason: 'same_filament' });
 
     // Once that shelf is full (hard limit) it is never suggested. A manufacturer preference on an
     // active shelf is ignored (owner decision 2026-11-11: it applies to clip storage only).
-    boxed(TENANT_A, other, 'loc2.shelf-4', 8);
+    boxed(TENANT_A, other, 'loc2.shelf-4', 7);
     db.prepare(
       "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'loc3.shelf-3'",
     ).run(TENANT_A);
@@ -316,6 +316,13 @@ describe('container tags (SPOOL-191)', () => {
         ).run(TENANT_A);
         view = asContainer(await scoped.tagView(HOME_TAG, held));
         expect(view.suggestion).toMatchObject({ location_id: 'clips.bin-1', reason: 'most_free' });
+        // Another clip of the same filament in clip storage makes that bin "the same filament here".
+        clip(TENANT_A, acme, 'clips.bin-2', 'free');
+        view = asContainer(await scoped.tagView(HOME_TAG, held));
+        expect(view.suggestion).toMatchObject({
+          location_id: 'clips.bin-2',
+          reason: 'same_filament',
+        });
       });
     }
 

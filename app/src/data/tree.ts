@@ -209,7 +209,7 @@ export interface PlacementSuggestion {
  * set is optional; with none given the order is most free first, as before.
  */
 export interface PlacementPreference {
-  /** Leaves that already hold the same filament (boxed stock or other clips). Ranked first. */
+  /** Leaves that already hold the same filament (for a held clip: other clips of it). Ranked first. */
   sameFilamentAt?: ReadonlySet<string>;
   /** Leaves whose manufacturer preference matches the filament's manufacturer. Ranked next. */
   manufacturerPreferredAt?: ReadonlySet<string>;
