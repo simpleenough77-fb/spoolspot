@@ -460,6 +460,18 @@ describe('temporary tables cannot stand in for the real ones (review round 2)', 
     db.exec('DROP TABLE temp.event_delete_grant');
   });
 
+  it('once a connection has seen the closer, losing it makes every batch fail closed', async () => {
+    const { db, sql } = await setup();
+    await sql.batch([{ query: 'SELECT 1' }]);
+    db.exec('DROP TRIGGER event_delete_grant_left_open');
+    db.exec('DROP TABLE event_delete_grant_closed');
+    await expect(sql.batch([{ query: 'SELECT 1' }])).rejects.toThrow(/no such table/);
+    await expect(sql.batch(guardedEventDelete(TENANT_A, { scope: 'tenant' }))).rejects.toThrow(
+      /no such table/,
+    );
+    expect(events(db, TENANT_A)).toBe(2);
+  });
+
   it('startup still sees a leftover grant behind a temporary table of the same name', async () => {
     const { db } = await setup();
     db.exec('PRAGMA foreign_keys = OFF');

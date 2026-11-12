@@ -50,6 +50,11 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
   // Set when a rollback fails: the connection may still be inside a half-done transaction (with an
   // event delete grant visible to it), so it is closed and never used again. Restart to recover.
   let unusable = false;
+  // Once the closer has been seen on this connection it is always run: if it is later dropped or
+  // renamed, the appended statement fails ("no such table") and the batch rolls back, instead of the
+  // check being skipped as it is on a database from before migration 0003. Seen at creation too, so a
+  // first batch that removes it cannot skip it either.
+  let closerSeen = hasGrantCloser(db);
   const usable = (): void => {
     if (unusable) throw new Error('database connection is unusable after a failed rollback');
   };
@@ -71,7 +76,10 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
           }
           // Last statement of every batch (SPOOL-194): an event delete grant still open aborts the
           // batch. Here, not in callers, so no batch can forget it. Skipped before migration 0003.
-          if (hasGrantCloser(db)) db.prepare(GRANT_CLOSED_CHECK.query).run();
+          if (closerSeen || hasGrantCloser(db)) {
+            closerSeen = true;
+            db.prepare(GRANT_CLOSED_CHECK.query).run();
+          }
           db.exec('COMMIT');
           return changes;
         } catch (error) {
