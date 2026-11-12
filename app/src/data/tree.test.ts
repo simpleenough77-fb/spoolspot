@@ -292,3 +292,53 @@ describe('suggestPlacements', () => {
     expect(suggestPlacements(wide, 1, 'active_use').map((s) => s.location_id)).toEqual(['slot']);
   });
 });
+
+describe('suggestPlacements intake order (SPOOL-191)', () => {
+  const wide = buildTree([
+    container('home', null),
+    leaf('roomy', 'home', 20, 0),
+    leaf('same', 'home', 10, 8),
+    leaf('same-full', 'home', 10, 10),
+    leaf('maker', 'home', 10, 5, 'soft', 'clip_storage'),
+    leaf('unset', 'home', null, 0, 'soft', 'passive_storage'),
+    leaf('slot', 'home', 1, 0, 'hard', 'active_use'),
+  ]);
+  const prefer = {
+    sameFilamentAt: new Set(['same', 'same-full', 'unset', 'slot']),
+    manufacturerPreferredAt: new Set(['maker', 'unset']),
+  };
+
+  it('ranks same filament first, then manufacturer preference, then most free', () => {
+    const got = suggestPlacements(wide, 1, undefined, 5, undefined, prefer);
+    expect(got.map((s) => [s.location_id, s.reason])).toEqual([
+      ['same', 'same_filament'],
+      ['maker', 'manufacturer_preference'],
+      ['roomy', 'most_free'],
+    ]);
+  });
+
+  it('never suggests a full leaf, a leaf with no capacity or a slot, whatever the preference', () => {
+    const ids = suggestPlacements(wide, 1, undefined, 5, undefined, prefer).map(
+      (s) => s.location_id,
+    );
+    expect(ids).not.toContain('same-full');
+    expect(ids).not.toContain('unset');
+    expect(ids).not.toContain('slot');
+  });
+
+  it('leaves out excluded leaves', () => {
+    const ids = suggestPlacements(wide, 1, undefined, 5, undefined, {
+      ...prefer,
+      exclude: new Set(['same']),
+    }).map((s) => s.location_id);
+    expect(ids).toEqual(['maker', 'roomy']);
+  });
+
+  it('keeps the most-free order when no preference is given', () => {
+    expect(suggestPlacements(wide, 1).map((s) => [s.location_id, s.reason])).toEqual([
+      ['roomy', 'most_free'],
+      ['maker', 'most_free'],
+      ['same', 'most_free'],
+    ]);
+  });
+});
