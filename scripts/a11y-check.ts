@@ -36,6 +36,10 @@ function htmlFiles(dir: string): string[] {
 const PLACE_TAG = 'SKQT00000001';
 /** A container tag (SPOOL-191): a tag registry row only, on Location 1 (two active shelves). */
 const CONTAINER_TAG = 'SKQT00000002';
+/** A container tag on Active storage (all three active locations), for a suggestion for a held clip. */
+const ACTIVE_TAG = 'SKQT00000003';
+/** A clip with no place recorded. */
+const NOWHERE_TAG = 'S00000000098';
 const TENANT = '3b1c0d1e-5a1e-4c63-9a0e-5b2a6f0c7d11';
 // A throwaway token for this scan only: it protects an in-memory database that lives for seconds.
 const CODE = 'A11Y01';
@@ -100,6 +104,12 @@ async function scanApp() {
   db.prepare(
     "INSERT INTO tag (tenant_id, tag_id, kind, target_id) VALUES (?, ?, 'location', 'loc1')",
   ).run(TENANT, CONTAINER_TAG);
+  db.prepare(
+    "INSERT INTO tag (tenant_id, tag_id, kind, target_id) VALUES (?, ?, 'location', 'active')",
+  ).run(TENANT, ACTIVE_TAG);
+  db.prepare(
+    "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, '00000000-0000-4000-8000-0000000000cc', ?, ?, NULL, 'free')",
+  ).run(TENANT, NOWHERE_TAG, filament);
   // The real app with the real static handler, so the CSP header and module scripts are exercised.
   return createApp({
     auth: createDevTokenProvider({ token: SCAN_TOKEN, tenantId: TENANT }),
@@ -368,9 +378,25 @@ try {
   // The tag page: sign in, a clip card, holding it, the hard-limit warning, a move, a place card, and the
   // neutral pages. Each scheme uses its own clip so the two runs do not depend on each other.
   const tapBase = `http://127.0.0.1:${String(port)}`;
-  for (const [scheme, clipTag] of [
-    ['light', 'S00000000001'],
-    ['dark', 'S00000000002'],
+  // The API's suggestion for a container tag, asked from inside the page (same session cookie).
+  const apiSuggestion = (tab: Page, tag: string, held?: string) =>
+    tab.evaluate(
+      async ([t, h]) => {
+        const query = h ? `?held=${h}` : '';
+        const r = await fetch(`/api/v1/tags/${t}${query}`, { cache: 'no-store' });
+        const v = (await r.json()) as { suggestion: { location_id: string; name: string } | null };
+        return v.suggestion;
+      },
+      [tag, held ?? ''] as const,
+    );
+  const heldId = (tab: Page) =>
+    tab.evaluate(() => {
+      const raw = localStorage.getItem('spoolspot.held-clip');
+      return raw ? (JSON.parse(raw) as { id: string }).id : '';
+    });
+  for (const [scheme, clipTag, heldTag, fullTag] of [
+    ['light', 'S00000000001', 'S00000000003', 'S00000000005'],
+    ['dark', 'S00000000002', 'S00000000004', 'S00000000006'],
   ] as const) {
     const context = await browser.newContext({
       colorScheme: scheme,
@@ -389,7 +415,19 @@ try {
       'Clip: Scan PLA Black',
       'a clip tag shows its filament',
     );
+    // The owner's scenario: the clip's tag says where it belongs, with the containers above it.
+    violations += expectText(
+      await tab.locator('#clip-place').innerText(),
+      'This clip belongs at Location 1 - Shelf 1.',
+      'a clip tag says where the clip belongs',
+    );
+    violations += expectText(
+      await tab.locator('#tag-body ol.path').innerText(),
+      'Active storage',
+      'a clip tag shows the chain of containers above its place',
+    );
     violations += await axe(tab, `tap (${scheme}, clip card)`);
+    violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, clip card)`);
     await tab.click('#pick-up');
     await tab.locator('#mover-go').waitFor();
     violations += await axe(tab, `tap (${scheme}, mover open)`);
@@ -407,6 +445,16 @@ try {
     await tab.selectOption('#mover-place', 'closet-storage.shelf-1');
     await tab.click('#mover-go');
     await tab.locator('#tap-status:has-text("Moved.")').waitFor();
+    violations += expectText(
+      await tab.locator('#tap-status').innerText(),
+      'is now at Storage closet - Shelf 1 (Home, Passive storage, Storage closet)',
+      'after a move the page states the new place and its chain',
+    );
+    violations += expectText(
+      await tab.locator('#clip-place').innerText(),
+      'Storage closet - Shelf 1',
+      'after a move the clip card shows the new place',
+    );
     violations += await axe(tab, `tap (${scheme}, moved)`);
     await tab.goto(`${tapBase}/${CODE}${PLACE_TAG}`);
     await tab.locator('#clip-list-section:not([hidden])').waitFor();
@@ -417,6 +465,24 @@ try {
     );
     violations += await axe(tab, `tap (${scheme}, place card)`);
     violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, place card)`);
+    violations += expectText(
+      await tab.locator('#tag-body ol.path').innerText(),
+      'Location 1',
+      'a place tag shows the chain of containers above it',
+    );
+    // The non-NFC way to the same views: choose a container from the list on the tap page.
+    await tab.selectOption('#browse-place', 'loc1');
+    await tab.locator('#tap-status:has-text("Showing Location 1.")').waitFor();
+    violations += expectText(
+      await tab.locator('#inside-list').innerText(),
+      'Location 1 - Shelf 2',
+      'a container chosen from the list shows the places inside',
+    );
+    violations += await axe(tab, `tap (${scheme}, container chosen from the list)`);
+    violations += await reflow(
+      tab,
+      `tap (${scheme}, 320px wide, text at 200%, container chosen from the list)`,
+    );
     // A container tag: the card must render (not "data this page does not understand").
     await tab.goto(`${tapBase}/${CODE}${CONTAINER_TAG}`);
     await tab.waitForFunction(() => {
@@ -431,11 +497,88 @@ try {
       'Location 1',
       'a container tag shows the container name',
     );
-    violations += await axe(tab, `tap (${scheme}, container card)`);
+    // Nothing held: the API's most-room suggestion is at the top, in words.
+    const most = await apiSuggestion(tab, CONTAINER_TAG);
+    violations += expectText(
+      await tab.locator('#suggestion-text').innerText(),
+      most ? `Suggested: ${most.name} (` : '(the API gave no suggestion)',
+      'a container tag shows the API suggestion at the top',
+    );
+    violations += await axe(tab, `tap (${scheme}, container card with a suggestion)`);
     violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, container card)`);
+
+    // A clip with no place recorded says so plainly.
+    await tab.goto(`${tapBase}/${CODE}${NOWHERE_TAG}`);
+    await tab.locator('#clip-place').waitFor();
+    violations += expectText(
+      await tab.locator('#clip-place').innerText(),
+      'No place is recorded for this clip.',
+      'a clip with no place says so',
+    );
+    violations += await axe(tab, `tap (${scheme}, clip with no place)`);
+
+    // Holding a clip, then tapping a container: the best place for it, confirmed with taps only.
+    await tab.goto(`${tapBase}/${CODE}${heldTag}`);
+    await tab.click('#pick-up');
+    await tab.locator('#mover-go').waitFor();
+    const held = await heldId(tab);
+    await tab.goto(`${tapBase}/${CODE}${ACTIVE_TAG}`);
+    await tab.locator('#suggestion-go').waitFor();
+    const best = await apiSuggestion(tab, ACTIVE_TAG, held);
+    violations += expectText(
+      await tab.locator('#suggestion-text').innerText(),
+      best ? `Suggested: ${best.name} (` : '(the API gave no suggestion)',
+      'the held clip’s suggestion is the API’s',
+    );
+    violations += expectText(
+      await tab.locator('#inside-list li.suggested').innerText(),
+      best?.name ?? '(none)',
+      'the suggested place is marked in the list in words',
+    );
+    violations += await axe(tab, `tap (${scheme}, container with a suggestion for a held clip)`);
+    violations += await reflow(
+      tab,
+      `tap (${scheme}, 320px wide, text at 200%, container with a held clip)`,
+    );
+    await tab.click('#suggestion-go');
+    await tab.locator('#mover-go').waitFor();
+    violations += (await tab.locator('#mover-place').inputValue()) === best?.location_id ? 0 : 1;
+    await tab.click('#mover-go');
+    await tab.locator('#tap-status:has-text("Moved.")').waitFor();
+    violations += expectText(
+      await tab.locator('#tap-status').innerText(),
+      `is now at ${best?.name ?? '(none)'} (Home, Active storage,`,
+      'after a move from a container the page states the new place and its chain',
+    );
+    violations += await axe(tab, `tap (${scheme}, after a move from a container)`);
+
+    // Holding a clip where nothing inside suits it: no suggestion; choosing a full hard place warns.
+    await tab.goto(`${tapBase}/${CODE}${fullTag}`);
+    await tab.click('#pick-up');
+    await tab.locator('#mover-go').waitFor();
+    await tab.goto(`${tapBase}/${CODE}${CONTAINER_TAG}`);
+    await tab.locator('#inside-list button').first().waitFor();
+    violations += expectText(
+      await tab.locator('#suggestion-text').innerText(),
+      'No place inside suits',
+      'a container with nothing suitable says so',
+    );
+    violations += await axe(tab, `tap (${scheme}, container without a suggestion)`);
+    await tab.getByRole('button', { name: 'Choose Location 1 - Shelf 2' }).click();
+    await tab.click('#mover-go');
+    await tab.locator('#mover-anyway:not([hidden])').waitFor();
+    violations += expectText(
+      await tab.locator('#mover-warning').innerText(),
+      'hard limit',
+      'a full hard place chosen from a container warns before moving',
+    );
+    violations += await axe(tab, `tap (${scheme}, container move hard-limit warning)`);
+    await tab.click('#mover-cancel');
     // Unknown tag of this instance and a wrong instance code: the same neutral message.
     await tab.goto(`${tapBase}/${CODE}SKQT0000ZZZZ`);
     await tab.locator('#tap-status:has-text("not recognised")').waitFor();
+    violations += (await tab.locator('#browse').isVisible()) ? 1 : 0;
+    violations += (await tab.locator('#tag-card').isVisible()) ? 1 : 0;
     violations += await axe(tab, `tap (${scheme}, unknown tag)`);
     const wrong = await tab.goto(`${tapBase}/ZZZZZZSKQT0000ZZZZ`);
     violations += wrong?.status() === 404 ? 0 : 1;
