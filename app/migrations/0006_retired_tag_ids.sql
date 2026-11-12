@@ -14,7 +14,7 @@
 --   * A retired ID is refused on every way into the registry (INSERT, and UPDATE of tag_id or
 --     tenant_id), so it can never be claimed for a place or container, set on a leaf, or given to a
 --     clip again in that tenant. Writes to location.tag_id and clip.tag_id reach the registry through
---     the 0002/0005 triggers, so they are refused the same way and the whole statement rolls back.
+--     the 0002 and 0006 triggers, so they are refused the same way and the whole statement rolls back.
 --   * Following the place (owner decision D3) is not retiring: a move changes no tag, a rename
 --     re-points the registry row (below), and the ID stays in use by the same record.
 --   * Exempt: every ID of the fixed demo form, DEM0 or DEM1 followed by eight digits (the public demo
@@ -32,9 +32,10 @@
 --
 -- 2. A leaf that becomes a container keeps its tag (owner decision D4). 0001 makes a container's
 -- tag_id NULL, so the change clears the column; until now location_tag_update (0002's rule, kept in
--- 0005's version) then dropped the registry row and freed the ID. The keep applies only when the
--- change is one statement; clearing tag_id first and changing the type afterwards retires the ID. location_tag_update is recreated below, same name, so that the
--- row stays as the container's registry-only tag. The ID is not retired: the same place still has it.
+-- 0005's version) then dropped the registry row and freed the ID. location_tag_update is recreated
+-- below, same name, so that the row stays as the container's registry-only tag. The ID is not
+-- retired: the same place still has it. The keep applies only when the change is one statement;
+-- clearing tag_id first and changing the type afterwards retires the ID.
 --
 -- What changed in location_tag_update (0005's body otherwise; same name, columns and WHEN):
 --   * The re-point now keeps the place's registry row, re-pointed to NEW.id, whenever the tenant is
