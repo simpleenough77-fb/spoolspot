@@ -13,7 +13,7 @@ const REFUSALS = {
   not_a_leaf: 'Choose a shelf or drawer, not a whole room. Nothing changed.',
   slot_not_supported: 'A loaded slot holds its spool through its clip, not a boxed count.',
   not_passive_storage:
-    'Boxed stock goes on a passive storage shelf or drawer. Opened spools and clips are placed with their clips. Nothing changed.',
+    'Boxed stock goes on a passive storage shelf or drawer. Opened spools are placed with their clips. Nothing changed.',
   at_maximum: 'That is the largest count this page allows. Nothing changed.',
   conflict: 'That changed while you were looking. Nothing was changed; try again.',
   not_found: 'That filament or place is not recognised here. Nothing changed.',
