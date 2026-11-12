@@ -72,9 +72,13 @@ export type TagView =
       /** A container tag (SPOOL-191): every leaf below it, in tree order, with its room. */
       inside: LocationView[];
       /**
-       * The best leaf inside for the held clip, by the intake order (same filament, then manufacturer
-       * preference, then most free). Never a full leaf, a leaf with no capacity or a slot. Advisory only:
-       * nothing is moved. Null when nothing inside has room.
+       * The best leaf inside for the held clip. The clip's state limits the candidates (owner decision
+       * 2026-11-11): on_spool to active storage only, free and spool_empty to clip storage only. Among
+       * those, the intake order: same filament (boxed or clipped), then a manufacturer preference (on
+       * clip storage only), then most free. With no clip held, most free first, any leaf but a slot.
+       * Never a full leaf, a leaf with no capacity, a slot or the clip's own place. Advisory only:
+       * nothing is moved. Null when nothing allowed inside has room, or when the held clip sits in a
+       * slot (a move out of a slot is refused).
        */
       suggestion: PlacementSuggestion | null;
       /** Whether the held clip was found in this tenant and used for the ranking. */
@@ -266,8 +270,10 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       if (!node) return null;
       if (node.leaf) return { kind: 'location', location: locationView(node) };
       // A container tag lives only in the tag registry (SPOOL-191 decision 2) and resolves to the
-      // leaves below it. The suggestion reuses suggestPlacements, so it follows the same rules as every
-      // other suggestion; slots are left out even in a container that holds only slots (decision 3).
+      // leaves below it. The suggestion ranks with suggestPlacements (same filament, then manufacturer
+      // preference on clip storage only, then most free); containerSuggestion then limits it by the held
+      // clip's state, never offers a slot (even in a container of slots only), and offers nothing for
+      // a clip sitting in a slot.
       const held = heldClipId === undefined ? null : await heldClipFor(heldClipId);
       const suggestion = containerSuggestion(tree, node, held);
       return {
