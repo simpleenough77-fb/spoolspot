@@ -122,15 +122,23 @@ const closeGrant = (tenant: string): Statement => ({
  * database's own defences behind it (triggers, the closing check) are still tested: this adapter runs
  * on a connection where the allowed placeholder `slipped(i)` executes `texts[i]` instead, standing for
  * a statement that got past the allow-list. Test-only; the real adapter has no such path.
+ *
+ * Every batch through it checks, after it settles, that each forbidden text was prepared and run on
+ * the connection; if a placeholder was not swapped the batch fails with that instead, so a test can
+ * never pass on the placeholder alone.
  */
 function adapterPastTheAllowList(db: Db, texts: readonly string[]): Sql {
   const placeholder = /^SELECT 'slipped (\d+)'$/;
+  const swapped = new Set<number>();
   const connection = new Proxy(db, {
     get(target, key) {
       if (key === 'prepare') {
         return (query: string) => {
           const m = placeholder.exec(query);
-          return target.prepare(m ? (texts[Number(m[1])] ?? query) : query);
+          const text = m ? texts[Number(m[1])] : undefined;
+          if (text === undefined) return target.prepare(query);
+          swapped.add(Number(m?.[1]));
+          return target.prepare(text);
         };
       }
       const value: unknown = Reflect.get(target, key);
@@ -139,7 +147,28 @@ function adapterPastTheAllowList(db: Db, texts: readonly string[]): Sql {
         : value;
     },
   });
-  return sqlFromDatabase(connection);
+  const sql = sqlFromDatabase(connection);
+  const everySwapped = (): void => {
+    const missing = texts.map((_, i) => i).filter((i) => !swapped.has(i));
+    if (missing.length > 0) {
+      throw new Error(`placeholder not swapped for text ${missing.join(', ')}; nothing was tested`);
+    }
+  };
+  return {
+    all: (query, params) => sql.all(query, params),
+    async batch(statements) {
+      swapped.clear();
+      let result: number[];
+      try {
+        result = await sql.batch(statements);
+      } catch (error) {
+        everySwapped();
+        throw error;
+      }
+      everySwapped();
+      return result;
+    },
+  };
 }
 const slipped = (i: number, params?: SqlParam[]): Statement => ({
   query: `SELECT 'slipped ${String(i)}'`,
