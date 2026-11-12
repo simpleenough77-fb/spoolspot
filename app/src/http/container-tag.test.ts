@@ -169,7 +169,10 @@ describe('container tags (SPOOL-191)', () => {
     // Boxed stock is not "the same filament here" (owner decision 2026-11-12: only clipped spools
     // count), even on an active shelf with no other clip of it: the ranking stays most free.
     boxed(TENANT_A, acme, 'loc2.shelf-4', 2);
-    expect(migrate()).toEqual(['0004_stock_passive_only.sql']);
+    expect(migrate()).toEqual([
+      '0004_stock_passive_only.sql',
+      '0005_container_stays_container.sql',
+    ]);
     view = asContainer(await scoped.tagView(ACTIVE_TAG, held));
     expect(view.held_clip_used).toBe(true);
     expect(view.suggestion).toMatchObject({ location_id: 'loc1.shelf-2', reason: 'most_free' });
@@ -424,7 +427,10 @@ describe('container tags (SPOOL-191)', () => {
     });
     // Tenant A: the same filament boxed and clipped, and a matching manufacturer preference.
     boxed(TENANT_A, shared, 'loc2.shelf-4', 2);
-    expect(migrate()).toEqual(['0004_stock_passive_only.sql']);
+    expect(migrate()).toEqual([
+      '0004_stock_passive_only.sql',
+      '0005_container_stays_container.sql',
+    ]);
     clip(TENANT_A, shared, 'loc2.shelf-3');
     db.prepare(
       "UPDATE location SET prefers_manufacturer = 'Acme' WHERE tenant_id = ? AND id = 'clips.bin-1'",
