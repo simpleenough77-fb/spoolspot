@@ -119,10 +119,10 @@ describe('server start', () => {
         .split('\n')
         .filter((l) => l.trim() !== '' && !/ExperimentalWarning|--trace-warnings/.test(l));
       expect(lines).toEqual([
-        'database connection is unusable after a failed rollback; exiting so the server can be restarted',
+        'database connection is unusable after a failed rollback (cause Error, code ERR_SQLITE_ERROR, errcode 10); exiting so the server can be restarted',
       ]);
       expect(stderr).not.toMatch(/^\s+at /m);
-      expect(stderr).not.toMatch(/INSERT|UPDATE|stock_line|disk I\/O/);
+      expect(stderr).not.toMatch(/INSERT|UPDATE|stock_line|disk I\/O|MESSAGE-MARKER|simulated/);
     } finally {
       if (child?.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       rmSync(dir, { recursive: true, force: true });

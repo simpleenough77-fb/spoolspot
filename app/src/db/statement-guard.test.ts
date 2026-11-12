@@ -158,6 +158,67 @@ describe('one statement per call', () => {
   });
 });
 
+describe('SQLite internal names are refused, quoted or not (review of PR #59)', () => {
+  const spellings = [
+    'SELECT * FROM pragma_optimize',
+    'SELECT * FROM "pragma_optimize"',
+    'SELECT * FROM [pragma_optimize]',
+    'SELECT * FROM `pragma_optimize`',
+    'SELECT * FROM main.pragma_optimize',
+  ];
+
+  it('refuses every spelling of a pragma function, and nothing runs', async () => {
+    const { db, sql } = memoryDatabase();
+    const version = (): unknown => db.prepare('PRAGMA schema_version').get();
+    const before = version();
+    for (const q of spellings) {
+      await expect(sql.all(q), q).rejects.toThrow(/SQLite internal name/);
+      await expect(sql.batch([{ query: q }]), q).rejects.toThrow(/SQLite internal name/);
+    }
+    expect(version()).toEqual(before);
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'sqlite_stat1'").get(),
+    ).toMatchObject({ n: 0 });
+  });
+
+  it('refuses the sqlite_ tables and dbstat in reads and writes', async () => {
+    const { db, sql } = memoryDatabase();
+    const before = db.prepare('PRAGMA schema_version').get();
+    for (const q of [
+      'SELECT name FROM sqlite_master',
+      'SELECT name FROM main.SQLITE_SCHEMA',
+      'SELECT * FROM "sqlite_temp_master"',
+      'SELECT * FROM dbstat',
+      'SELECT * FROM [DBSTAT]',
+    ]) {
+      expect(refusedRead(q), q).toThrow(/SQLite internal name/);
+    }
+    for (const q of [
+      "INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('location', NULL, '1')",
+      'DELETE FROM "sqlite_sequence"',
+      'UPDATE location SET name = (SELECT name FROM pragma_table_info)',
+    ]) {
+      expect(refusedData(q), q).toThrow(/SQLite internal name/);
+      await expect(sql.batch([{ query: q }]), q).rejects.toBeInstanceOf(StatementNotAllowedError);
+    }
+    expect(db.prepare('PRAGMA schema_version').get()).toEqual(before);
+  });
+
+  it('does not refuse those names inside string values, or names that only contain them', () => {
+    for (const q of [
+      "SELECT 'pragma_optimize' AS text",
+      "SELECT * FROM location WHERE name = 'sqlite_master' OR name = 'dbstat'",
+      'SELECT my_sqlite_thing, uses_pragma_x FROM t',
+      'SELECT "my_sqlite_thing" FROM t',
+      'SELECT dbstats FROM t',
+    ]) {
+      expect(refusedRead(q), q).not.toThrow();
+    }
+    // A quoted "delete" is still ignored by the WITH write check.
+    expect(refusedRead('WITH x AS (SELECT 1 AS "delete") SELECT "delete" FROM x')).not.toThrow();
+  });
+});
+
 describe('what the allow-list does not catch (it is not a SQL parser)', () => {
   it('an allowed statement that fires a trigger passes the check; the trigger runs', async () => {
     const { db, sql } = memoryDatabase();
@@ -216,8 +277,10 @@ describe('raw database paths outside the adapter (SPOOL-199)', () => {
       'scripts/import-seed.ts',
       'scripts/migrate.ts',
     ];
+    // `.exec(` with a string literal on any receiver is a database call: RegExp.exec is always called
+    // with a variable in this codebase, so it does not match (a literal argument would need review).
     const raw =
-      /from ['"]node:sqlite['"]|\bDatabaseSync\b|\bopenDatabase\(|\.prepare\(|\bdb\.exec\(/;
+      /from ['"]node:sqlite['"]|\bDatabaseSync\b|\bopenDatabase\(|\.prepare\(|\bdb\.exec\(|\.exec\(\s*['"`]/;
     const tracked = execFileSync('git', ['ls-files', '-z', 'app/src', 'scripts'], {
       encoding: 'utf8',
     })
@@ -228,7 +291,7 @@ describe('raw database paths outside the adapter (SPOOL-199)', () => {
     expect(users.sort()).toEqual(allowed.sort());
   });
 
-  it('route handlers and the data layer never import the database driver or the opener', () => {
+  it('route handlers and the data layer never import the driver, the opener, the startup checks or test helpers', () => {
     const tracked = execFileSync('git', ['ls-files', '-z', 'app/src/http', 'app/src/data'], {
       encoding: 'utf8',
     })
@@ -237,7 +300,7 @@ describe('raw database paths outside the adapter (SPOOL-199)', () => {
     expect(tracked.length).toBeGreaterThan(5);
     for (const f of tracked) {
       expect(readFileSync(f, 'utf8'), f).not.toMatch(
-        /from ['"][^'"]*(node:sqlite|db\/sqlite\.ts|db\/migrate\.ts)['"]/,
+        /from ['"][^'"]*(node:sqlite|db\/sqlite\.ts|db\/migrate\.ts|db\/integrity\.ts|testing(-fail-commit)?\.ts)['"]/,
       );
     }
   });

@@ -20,10 +20,13 @@ export class StatementNotAllowedError extends Error {
 
 /**
  * The statement with comments removed and every string literal and quoted identifier replaced by a
- * blank placeholder, so keywords inside them are not mistaken for code. Refuses text whose quote or
- * comment is never closed: such text is malformed, and guessing where it ends could hide a statement.
+ * blank placeholder, so keywords inside them are not mistaken for code; the contents of the quoted
+ * identifiers ("", ``, []) are returned separately, because a quoted name is still a name. Refuses
+ * text whose quote or comment is never closed: such text is malformed, and guessing where it ends
+ * could hide a statement.
  */
-function codeOf(query: string): string {
+function codeOf(query: string): { code: string; quotedNames: string[] } {
+  const quotedNames: string[] = [];
   let out = '';
   let i = 0;
   const n = query.length;
@@ -53,6 +56,7 @@ function codeOf(query: string): string {
         j = end + 1;
         break;
       }
+      if (c !== "'") quotedNames.push(query.slice(i + 1, j - 1).replaceAll(close + close, close));
       out += ' _ ';
       i = j;
     } else {
@@ -60,16 +64,28 @@ function codeOf(query: string): string {
       i += 1;
     }
   }
-  return out;
+  return { code: out, quotedNames };
 }
+
+/**
+ * Names that reach SQLite internals from a statement that otherwise looks like data: table-valued
+ * pragma functions (pragma_optimize runs ANALYZE), the sqlite_ schema and statistics tables, and the
+ * dbstat virtual table. No application statement uses them; startup checks read sqlite_master on
+ * their own path.
+ */
+const INTERNAL_NAME = /^(pragma_|sqlite_)\w*$|^dbstat$/i;
 
 function firstWord(code: string): string {
   return (/^\s*([A-Za-z]+)/.exec(code)?.[1] ?? '').toUpperCase();
 }
 
-/** Shape checks shared by every statement: one statement, no REPLACE conflict resolution. */
+/** Shape checks shared by every statement: no SQLite internal name, one statement, no REPLACE. */
 function shape(query: string): { code: string; first: string } {
-  const code = codeOf(query);
+  const { code, quotedNames } = codeOf(query);
+  const words = code.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
+  if ([...words, ...quotedNames].some((name) => INTERNAL_NAME.test(name))) {
+    throw new StatementNotAllowedError('a SQLite internal name (pragma function or sqlite_ table)');
+  }
   // Any semicolon outside a string or comment: a second statement, or a trailing one. None is needed.
   if (code.includes(';')) throw new StatementNotAllowedError('more than one statement');
   // REPLACE removes the conflicting row without firing delete triggers, so it is refused on every

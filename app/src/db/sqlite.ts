@@ -75,10 +75,28 @@ function inTransaction(db: DatabaseSync): boolean {
 export interface SqlOptions {
   /**
    * Called once, right after the connection was closed because a rollback failed inside a
-   * transaction. The server exits here so its supervisor restarts it and the startup check runs
-   * again (SPOOL-199); scripts leave it unset and fail with the original error.
+   * transaction, with the error that started it. The server exits here so its supervisor restarts it
+   * and the startup check runs again (SPOOL-199); scripts leave it unset and fail with the original
+   * error. Log it only through describeCause: its message may carry SQL text or values.
    */
-  readonly onUnusable?: () => void;
+  readonly onUnusable?: (cause: unknown) => void;
+}
+
+const SAFE_TOKEN = /^[A-Za-z0-9_]{1,64}$/;
+
+/**
+ * The class name and SQLite error codes of an error, for a one-line log: never its message, SQL text
+ * or values. node:sqlite sets `code` (ERR_SQLITE_ERROR) and `errcode` (the SQLite result code).
+ */
+export function describeCause(cause: unknown): string {
+  if (!(cause instanceof Error)) return 'cause unknown';
+  const { code, errcode } = cause as { code?: unknown; errcode?: unknown };
+  const parts = [`cause ${SAFE_TOKEN.test(cause.name) ? cause.name : 'Error'}`];
+  if (typeof code === 'string' && SAFE_TOKEN.test(code)) parts.push(`code ${code}`);
+  if (typeof errcode === 'number' && Number.isInteger(errcode)) {
+    parts.push(`errcode ${String(errcode)}`);
+  }
+  return parts.join(', ');
 }
 
 /**
@@ -143,7 +161,7 @@ export function sqlFromDatabase(db: DatabaseSync, options: SqlOptions = {}): Sql
               } catch {
                 /* already unusable */
               }
-              options.onUnusable?.();
+              options.onUnusable?.(error);
             }
           }
           throw error;
