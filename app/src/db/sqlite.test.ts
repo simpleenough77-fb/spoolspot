@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { memoryDatabase } from '../testing.ts';
-import { runMigrations } from './migrate.ts';
+import { MIGRATIONS_DIR, runMigrations } from './migrate.ts';
 import { openDatabase, sqlFromDatabase } from './sqlite.ts';
 
 describe('sql adapter', () => {
@@ -63,6 +63,23 @@ describe('sql adapter', () => {
         n: 0,
       });
       again.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs batches on a database from before migration 0003, which has no grant closer yet', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spoolspot-pre0003-'));
+    try {
+      for (const f of ['0001_init.sql', '0002_tag_registry.sql']) {
+        copyFileSync(join(MIGRATIONS_DIR, f), join(dir, f));
+      }
+      const db = openDatabase(':memory:');
+      expect(runMigrations(db, dir)).toEqual(['0001_init.sql', '0002_tag_registry.sql']);
+      const sql = sqlFromDatabase(db);
+      await expect(
+        sql.batch([{ query: "INSERT INTO tenant_settings (tenant_id) VALUES ('old')" }]),
+      ).resolves.toEqual([1]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
