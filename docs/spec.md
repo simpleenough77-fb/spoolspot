@@ -42,6 +42,8 @@ clip: { tag, filament, location, state: on_spool|spool_empty|free } # free = in 
 
 A clip's text is fixed, so a clip belongs to one filament for life. `refill` is only valid for refillable filaments.
 
+Boxed stock lines live on passive storage only. Active storage and active use hold opened spools through their clips, and clip storage holds clips.
+
 ## Workflows
 
 1. **New spool, first use.** Pick the filament; the count drops by one. Reuse a free clip for that filament or print a new one. Tap the destination to place it.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Boxed stock (SPOOL-63): pick a place, see what is boxed there, change a count with + and - taps, add a
+// Boxed stock (SPOOL-63): pick a passive storage place (SPOOL-200), see what is boxed there, change a count with + and - taps, add a
 // filament to the place by choosing manufacturer, type and color (no typing), and look up where one
 // filament is held. Refill packs are offered only for refillable filaments. Past a hard limit the page
 // warns and asks again ("Add anyway"). Every value goes in with textContent.
@@ -12,6 +12,8 @@ const REFUSALS = {
   refill_not_allowed: 'Refill packs are only for refillable filaments. Nothing changed.',
   not_a_leaf: 'Choose a shelf or drawer, not a whole room. Nothing changed.',
   slot_not_supported: 'A loaded slot holds its spool through its clip, not a boxed count.',
+  not_passive_storage:
+    'Boxed stock goes on a passive storage shelf or drawer. Opened spools and clips are placed with their clips. Nothing changed.',
   at_maximum: 'That is the largest count this page allows. Nothing changed.',
   conflict: 'That changed while you were looking. Nothing was changed; try again.',
   not_found: 'That filament or place is not recognised here. Nothing changed.',
@@ -83,17 +85,19 @@ export async function setupStock(nodes, onError, onChanged) {
   controller = new AbortController();
   const { signal } = controller;
 
-  // Boxed counts go on shelves and drawers, not in rooms or loaded slots.
-  const slotIds = new Set();
+  // Boxed counts go on passive storage only (SPOOL-200): not in rooms, slots, active shelves or clip bins.
+  const passiveIds = new Set();
   const walk = (ns) => {
     for (const n of ns) {
-      if (n.leaf && n.type === 'active_use') slotIds.add(n.id);
+      if (n.leaf && n.type === 'passive_storage') passiveIds.add(n.id);
       walk(n.children);
     }
   };
   walk(nodes);
-  const places = leafPaths(nodes).filter((p) => !slotIds.has(p.id));
-  const labels = new Map(places.map((p) => [p.id, p.label]));
+  const leaves = leafPaths(nodes);
+  const places = leaves.filter((p) => passiveIds.has(p.id));
+  // Every leaf keeps its readable name in "where is it?", including a line left elsewhere from before.
+  const labels = new Map(leaves.map((p) => [p.id, p.label]));
   if (places.length === 0) {
     section.hidden = true;
     return;

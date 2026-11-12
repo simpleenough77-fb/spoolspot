@@ -43,17 +43,17 @@ For a phone demo: `pnpm demo:fill`, start the server with `SPOOLSPOT_INSTANCE_CO
 
 The catalog is the list of filaments you can pick from. `pnpm catalog:import [file]` imports one (default `seed/catalog-sample.json`, a sample format until the Filament Clip Studio contract defines `catalog.json`; nothing in the studio is assumed). It is validated against `schema/catalog.schema.json` first and written in one atomic batch. It only adds: a filament that is already there is never overwritten (your reorder level stays yours), and a new id for a manufacturer, type and color that already exist is refused. Importing twice changes nothing.
 
-Boxed stock is a count per filament, place and pack (`spool` or `refill`). Counts change one tap at a time.
+Boxed stock is a count per filament, place and pack (`spool` or `refill`). Counts change one tap at a time. Boxed stock goes on passive storage only; active storage and slots hold opened spools through their clips, and clip storage holds clips.
 
 - `GET /api/v1/filaments`: the catalog, for choosing by tapping.
 - `GET /api/v1/locations/{id}/stock`: every stock line at a place (zero counts included).
 - `GET /api/v1/filaments/{id}/stock`: where a filament is held (counts above zero).
-- `POST /api/v1/stock/adjust` with `{"filament_id", "location_id", "pack": "spool"|"refill", "delta": 1|-1, "confirm"?}`: +1 creates the line on the first tap. Refused with 422: below zero, a refill pack for a disposable filament, a container, a loaded slot, over 10000. Past a hard limit it answers 409 `needs_confirmation` until `confirm` is true; a soft limit goes through with a notice. A write that another request got to first answers 409 `conflict` and stores nothing. Unknown ids and another tenant's ids answer 404.
+- `POST /api/v1/stock/adjust` with `{"filament_id", "location_id", "pack": "spool"|"refill", "delta": 1|-1, "confirm"?}`: +1 creates the line on the first tap. Refused with 422: below zero, a refill pack for a disposable filament, a container, a loaded slot (`slot_not_supported`), active or clip storage (`not_passive_storage`), over 10000. A line left at a non-passive place by a database from before migration 0004 can still be counted down to zero, never up; `node scripts/stock-off-passive.ts` lists such lines. Past a hard limit it answers 409 `needs_confirmation` until `confirm` is true; a soft limit goes through with a notice. A write that another request got to first answers 409 `conflict` and stores nothing. Unknown ids and another tenant's ids answer 404.
 
 Stock counts do not write events yet: intake and the other workflows that log events arrive with SPOOL-84.
 
 ### Boxed stock on the page (development preview)
 
-The main page has a **Boxed stock** section. Pick a place (shelves and drawers; loaded slots are left out) to see what is boxed there; tap **+** or **−** to change a count. To add a filament to the place, choose manufacturer, type and color from the imported catalog and a pack; **Refill pack** is offered only for refillable filaments. Past a hard limit the page warns and asks again with **Add anyway**. **Where is it?** lists the places that hold a chosen filament. Nothing is typed.
+The main page has a **Boxed stock** section. Pick a passive storage place (closet shelves and drawers; active shelves, slots and clip bins are left out) to see what is boxed there; tap **+** or **−** to change a count. To add a filament to the place, choose manufacturer, type and color from the imported catalog and a pack; **Refill pack** is offered only for refillable filaments. Past a hard limit the page warns and asks again with **Add anyway**. **Where is it?** lists the places that hold a chosen filament. Nothing is typed.
 
 For a phone demo use a throwaway database so it can be deleted afterwards: `SPOOLSPOT_DB=data/demo.db pnpm db:migrate && pnpm seed:import && pnpm catalog:import`, then start the server with the same `SPOOLSPOT_DB`. Delete `data/demo.db` when done.

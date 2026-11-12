@@ -129,7 +129,13 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
     ...(slot ? ([[slot.id, 1]] as [string, number][]) : []),
   ];
   const usable = clipPlan.filter(([id]) => present(id));
-  const stockHere = present(SOFT_DEMO_LOCATION);
+  // Boxed stock goes on passive storage only (SPOOL-200): no demo line if the shelf is anything else.
+  const stockHere =
+    db
+      .prepare(
+        "SELECT 1 AS n FROM location WHERE tenant_id = ? AND id = ? AND leaf = 1 AND type = 'passive_storage'",
+      )
+      .get(tenantId, SOFT_DEMO_LOCATION) !== undefined;
   const capacityWasUnset =
     stockHere &&
     (

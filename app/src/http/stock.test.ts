@@ -4,9 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { createDevTokenProvider } from '../auth/dev-token.ts';
 import { Scope } from '../auth/principal.ts';
 import { createScopedData } from '../data/scoped.ts';
+import { runMigrations } from '../db/migrate.ts';
 import { importSeed } from '../seed/import.ts';
 import {
   memoryDatabase,
+  memoryDatabaseUpTo,
   readJson,
   readSeed,
   SEED_SCHEMA_PATH,
@@ -169,19 +171,115 @@ describe('POST /api/v1/stock/adjust', () => {
 
   it('asks 409 before a hard limit and goes through with confirm', async () => {
     const { app, post, red, db } = await setup();
-    db.prepare('UPDATE location SET capacity = 1 WHERE tenant_id = ? AND id = ?').run(
-      TENANT_A,
-      'loc1.shelf-1',
-    );
-    expect((await post(app, tap(red, 'loc1.shelf-1'))).status).toBe(200);
-    const asked = await post(app, tap(red, 'loc1.shelf-1'));
+    // Boxed stock goes on passive storage only (SPOOL-200); this passive shelf is set to a hard limit.
+    const hard = 'closet-storage.shelf-2';
+    db.prepare(
+      "UPDATE location SET capacity = 1, capacity_mode = 'hard' WHERE tenant_id = ? AND id = ?",
+    ).run(TENANT_A, hard);
+    expect((await post(app, tap(red, hard))).status).toBe(200);
+    const asked = await post(app, tap(red, hard));
     expect(asked.status).toBe(409);
     expect(await asked.json()).toMatchObject({
       error: 'needs_confirmation',
       check: { outcome: 'warning' },
     });
-    const ok = await post(app, tap(red, 'loc1.shelf-1', 'spool', 1, { confirm: true }));
+    const ok = await post(app, tap(red, hard, 'spool', 1, { confirm: true }));
     expect(await ok.json()).toMatchObject({ line: { count: 2 } });
+  });
+
+  describe('boxed stock on passive storage only (SPOOL-200)', () => {
+    const errorOf = async (res: Response): Promise<[number, unknown]> => [
+      res.status,
+      await res.json(),
+    ];
+
+    it('answers 422 at active storage, a loaded slot and clip storage, and stores nothing', async () => {
+      const { app, post, red, blue, db } = await setup();
+      const slot = db
+        .prepare("SELECT id FROM location WHERE tenant_id = ? AND type = 'active_use' LIMIT 1")
+        .get(TENANT_A) as { id: string };
+      for (const [place, error] of [
+        ['loc1.shelf-1', 'not_passive_storage'],
+        ['clips.bin-1', 'not_passive_storage'],
+        [slot.id, 'slot_not_supported'],
+      ] as const) {
+        for (const body of [
+          tap(red, place),
+          tap(red, place, 'spool', 1, { confirm: true }),
+          tap(blue, place, 'refill'),
+          tap(red, place, 'spool', -1),
+        ]) {
+          expect(await errorOf(await post(app, body)), place).toEqual([422, { error }]);
+        }
+      }
+      expect(db.prepare('SELECT COUNT(*) AS n FROM stock_line').get()).toMatchObject({ n: 0 });
+      // Passive storage still works.
+      expect(await (await post(app, tap(blue, SHELF, 'refill'))).json()).toMatchObject({
+        line: { count: 1, pack: 'refill', location_id: SHELF },
+      });
+    });
+
+    it("gives another tenant's place the same answer as an unknown place", async () => {
+      const { as, post, red, green, db } = await setup();
+      // Places only tenant A has: one the rule refuses, one it accepts.
+      for (const [id, type, parent, mode] of [
+        ['a-only-active', 'active_storage', 'loc1', 'hard'],
+        ['a-only-bin', 'clip_storage', 'clips', 'soft'],
+        ['a-only-passive', 'passive_storage', 'closet-storage', 'soft'],
+      ] as const) {
+        db.prepare(
+          "INSERT INTO location (tenant_id, id, name, type, parent, leaf, capacity, capacity_mode, tag_source) VALUES (?, ?, 'A only', ?, ?, 1, 4, ?, 'sticker')",
+        ).run(TENANT_A, id, type, parent, mode);
+      }
+      const b = as(TENANT_B, [Scope.LocationsRead, Scope.InventoryWrite]);
+      const unknown = await errorOf(await post(b, tap(green, 'no-such-place')));
+      expect(unknown).toEqual([404, { error: 'location_not_found' }]);
+      for (const place of ['a-only-active', 'a-only-bin', 'a-only-passive']) {
+        for (const delta of [1, -1]) {
+          expect(await errorOf(await post(b, tap(green, place, 'spool', delta))), place).toEqual(
+            unknown,
+          );
+        }
+      }
+      // And A's filament is not B's to use at all.
+      expect((await post(b, tap(red, SHELF))).status).toBe(404);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM stock_line').get()).toMatchObject({ n: 0 });
+    });
+
+    it('lets a line left at an active shelf by an older database be tapped down to zero, never up', async () => {
+      const { db, sql } = memoryDatabaseUpTo('0003_event_delete_grant.sql');
+      await importSeed(sql, TENANT_A, readSeed(), readJson(SEED_SCHEMA_PATH));
+      const red = uuid();
+      db.prepare(
+        "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'Acme', 'PLA', 'Red', 'disposable')",
+      ).run(TENANT_A, red);
+      db.prepare(
+        "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, 'loc1.shelf-1', 'spool', 1)",
+      ).run(TENANT_A, uuid(), red);
+      runMigrations(db);
+      const app = createApp({
+        auth: createDevTokenProvider({ token: TEST_TOKEN, tenantId: TENANT_A }),
+        data: (p) => createScopedData(sql, p),
+        allowedHosts: ['localhost'],
+      });
+      const send = (body: unknown) =>
+        app.request('http://localhost/api/v1/stock/adjust', {
+          method: 'POST',
+          headers: { host: 'localhost', ...bearer, ...json },
+          body: JSON.stringify(body),
+        });
+      expect(await errorOf(await send(tap(red, 'loc1.shelf-1')))).toEqual([
+        422,
+        { error: 'not_passive_storage' },
+      ]);
+      expect(await (await send(tap(red, 'loc1.shelf-1', 'spool', -1))).json()).toMatchObject({
+        line: { count: 0, location_id: 'loc1.shelf-1' },
+      });
+      expect(await errorOf(await send(tap(red, 'loc1.shelf-1', 'spool', -1)))).toEqual([
+        422,
+        { error: 'not_passive_storage' },
+      ]);
+    });
   });
 
   it('needs the write scope', async () => {
