@@ -588,8 +588,20 @@ try {
     await tab.click('#pick-up');
     await tab.locator('#mover-go').waitFor();
     const held = await heldId(tab);
+    // A stale or altered stored place that claims a slot: the server used the clip and returned a
+    // suggestion, so the page shows it with its buttons (the slot claim is not trusted alone).
+    await setHeld(tab, held, 'Scan PLA Black', 'dreammaker.ams-a.slot-1');
     await tab.goto(`${tapBase}/${CODE}${ACTIVE_TAG}`);
     await tab.locator('#suggestion-go').waitFor();
+    violations += (await tab.locator('#inside-list button').count()) > 0 ? 0 : 1;
+    // WCAG 2.5.3: the suggestion button's accessible name contains its visible label.
+    const go = await tab
+      .locator('#suggestion-go')
+      .evaluate((b) => ({ shown: b.textContent, name: b.getAttribute('aria-label') ?? '' }));
+    if (!go.name.startsWith(go.shown) || /[\u2066-\u2069]/u.test(go.name)) {
+      console.error(`::error::the suggestion button is named "${go.name}" for "${go.shown}"`);
+      violations += 1;
+    }
     const best = await apiSuggestion(tab, ACTIVE_TAG, held);
     violations += expectText(
       await tab.locator('#suggestion-text').innerText(),
@@ -684,11 +696,12 @@ try {
     violations += await axe(tab, `tap (${scheme}, container without a suggestion)`);
     // Another clip is picked up elsewhere (another tab): a Choose redraws for it instead of moving.
     await setHeld(tab, '00000000-0000-4000-8000-000000000017', 'Scan PLA Black', 'loc1.shelf-1');
-    await tab.getByRole('button', { name: /^Choose\W*Location 1 - Shelf 1\W*$/u }).click();
+    await tab.getByRole('button', { name: 'Choose Location 1 - Shelf 1', exact: true }).click();
     await tab.locator('#tap-status:has-text("The held clip changed to")').waitFor();
     violations += (await tab.locator('#mover-go').isVisible()) ? 1 : 0;
     violations += await axe(tab, `tap (${scheme}, held clip changed)`);
-    await tab.getByRole('button', { name: /^Choose\W*Location 1 - Shelf 2\W*$/u }).click();
+    // Found by its plain accessible name (no hidden characters in it).
+    await tab.getByRole('button', { name: 'Choose Location 1 - Shelf 2', exact: true }).click();
     await tab.click('#mover-go');
     await tab.locator('#mover-anyway:not([hidden])').waitFor();
     violations += expectText(

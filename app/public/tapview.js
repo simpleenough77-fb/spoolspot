@@ -13,10 +13,11 @@ const REASON = {
   manufacturer_preference: 'this place is set aside for that manufacturer',
   most_free: 'it has the most room',
 };
-// First strong isolate and pop directional isolate: the text-only form of <bdi>, for places where an
-// element cannot go (an <option>, an aria-label).
-const FSI = '⁨';
-const PDI = '⁩';
+// First strong isolate and pop directional isolate: the text-only form of <bdi>, for visible text where
+// an element cannot go (an <option>). Not used in accessible names: those are spoken, bidi order does
+// not matter there, and the extra characters would break matching a control by its name.
+const FSI = '\u2068';
+const PDI = '\u2069';
 
 const plural = (n, w) => `${String(n)} ${w}${n === 1 ? '' : 's'}`;
 /** A name inside a sentence. */
@@ -27,7 +28,7 @@ export function partsText(parts) {
   return parts.map((p) => (typeof p === 'string' ? p : p.name)).join('');
 }
 
-/** The parts as one string, each name wrapped in bidi isolates (for attributes and option text). */
+/** The parts as one string, each name wrapped in bidi isolates (for <option> text only). */
 export function isolatedText(parts) {
   return parts.map((p) => (typeof p === 'string' ? p : `${FSI}${p.name}${PDI}`)).join('');
 }
@@ -192,7 +193,9 @@ export function heldInSlot(held, nodes) {
  * The suggestion is for that clip only when the API says it used it (`view.held_clip_used`); otherwise
  * it is the API's plain most-room suggestion and is never presented as being for the held clip.
  * `browsed`: the person chose the container from the list, so no suggestion was asked for. `inSlot`:
- * the held clip is loaded in a printer slot. Returns { heading, text, targetId, canChoose }; heading and
+ * the place the held clip was picked up from (kept in this browser's storage) is a printer slot. That
+ * is trusted only when the server agrees: it used the held clip and returned no suggestion, which is
+ * what it does for a clip in a slot. A stale or altered stored place never hides the server's answer. Returns { heading, text, targetId, canChoose }; heading and
  * text are parts; targetId is the API's suggested leaf, never re-ranked here.
  */
 export function suggestionCopy(view, held, { browsed = false, inSlot = false } = {}) {
@@ -203,12 +206,13 @@ export function suggestionCopy(view, held, { browsed = false, inSlot = false } =
         'Tap this container’s tag to get a suggested place. You can still choose a place below.',
       ],
       targetId: null,
-      canChoose: held !== null && !inSlot,
+      // No server answer to confirm a slot here, so the stored place cannot hide the buttons.
+      canChoose: held !== null,
     };
   }
   const used = held !== null && view.held_clip_used === true;
   const missing = held !== null && !used;
-  if (used && inSlot) {
+  if (used && inSlot && view.suggestion === null) {
     return {
       heading: ['Best place for ', name(held.label)],
       text: [
