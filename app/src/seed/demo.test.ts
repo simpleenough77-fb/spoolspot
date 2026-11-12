@@ -115,6 +115,33 @@ describe('demo data', () => {
     expect(row.capacity).toBe(4);
   });
 
+  it('removes the demo after a demo clip was moved (SPOOL-194), and only the demo events', async () => {
+    const { db, sql } = await setup();
+    fillDemo(db, TENANT_A);
+    const writer = createScopedData(sql, {
+      subject: 's',
+      tenantId: TENANT_A,
+      scopes: new Set([Scope.LocationsRead, Scope.InventoryWrite]),
+    });
+    const [demoClip] = db
+      .prepare("SELECT id FROM clip WHERE tenant_id = ? AND location_id = 'loc1.shelf-1' LIMIT 1")
+      .all(TENANT_A) as { id: string }[];
+    const moved = await writer.moveClip(demoClip?.id ?? '', 'closet-storage.shelf-1', false);
+    expect(moved).toMatchObject({ ok: true, moved: true });
+    // A real event of the same tenant, not about the demo, must survive the removal.
+    db.prepare("INSERT INTO event (tenant_id, id, type, to_location_id) VALUES (?, ?, 'intake', 'loc1.shelf-1')").run(
+      TENANT_A,
+      '00000000-0000-4000-8000-0000000d0001',
+    );
+    expect(removeDemo(db, TENANT_A)).toBe(27);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM clip').get()).toMatchObject({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM filament').get()).toMatchObject({ n: 0 });
+    expect(db.prepare('SELECT id FROM event').all()).toEqual([
+      { id: '00000000-0000-4000-8000-0000000d0001' },
+    ]);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM event_delete_grant').get()).toMatchObject({ n: 0 });
+  });
+
   it('marks everything it adds as demo', async () => {
     const { db } = await setup();
     fillDemo(db, TENANT_A);

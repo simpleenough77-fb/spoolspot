@@ -4,6 +4,7 @@
 // places. It never touches anything that is not its own, and it records no weight, cost or usage.
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { guardedEventDelete } from '../data/event-delete.ts';
 
 /** Marks every demo row: the filament's manufacturer, and the "DEM0" start of each clip tag. */
 export const DEMO_MANUFACTURER = 'SpoolSpot demo';
@@ -108,7 +109,11 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
   }
 }
 
-/** Removes only what fillDemo added, and puts the closet shelf's capacity back to "not set". */
+/**
+ * Removes only what fillDemo added, and puts the closet shelf's capacity back to "not set". Moving a demo
+ * clip records events about it; those are demo history, not the person's, so they go too, under a grant
+ * limited to the demo filament (SPOOL-194). Every other event stays: the database refuses the rest.
+ */
 export function removeDemo(db: DatabaseSync, tenantId: string): number {
   const filament = demoFilament(db, tenantId);
   if (filament === undefined) return 0;
@@ -120,6 +125,11 @@ export function removeDemo(db: DatabaseSync, tenantId: string): number {
     )?.color === COLOR_CAPACITY_SET;
   db.exec('BEGIN');
   try {
+    // Events first (they reference the demo clips and filament), and the grant is closed before the
+    // filament it names is deleted.
+    for (const s of guardedEventDelete(tenantId, { scope: 'filament', filamentId: filament })) {
+      db.prepare(s.query).run(...(s.params ?? []));
+    }
     const clips = db
       .prepare('DELETE FROM clip WHERE tenant_id = ? AND filament_id = ?')
       .run(tenantId, filament);
