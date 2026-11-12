@@ -2,9 +2,11 @@
 // Claiming an existing tag for a place (SPOOL-191 decision 4), over the real HTTP application.
 import { describe, expect, it } from 'vitest';
 import { createDevTokenProvider } from '../auth/dev-token.ts';
-import { Scope, type Principal } from '../auth/principal.ts';
+import { ForbiddenError, Scope, type Principal } from '../auth/principal.ts';
 import { createMemorySessionStore } from '../auth/session.ts';
 import { createScopedData } from '../data/scoped.ts';
+import { DEMO_PLACE_TAGS } from '../seed/demo.ts';
+import type { Sql, SqlParam, Statement } from '../db/sql.ts';
 import { importSeed } from '../seed/import.ts';
 import {
   memoryDatabase,
@@ -307,6 +309,12 @@ describe('POST /api/v1/tags/:tag/claim (SPOOL-191)', () => {
         const res = await request(path);
         out.push(`${String(res.status)} ${JSON.stringify([...res.headers])} ${await res.text()}`);
       }
+      const head = await request(`/${CODE}${tag}`, { method: 'HEAD' });
+      out.push(`${String(head.status)} ${JSON.stringify([...head.headers])} ${await head.text()}`);
+      const unsigned = await claim(tag, { location_id: SHELF }, { headers: json });
+      out.push(
+        `${String(unsigned.status)} ${JSON.stringify([...unsigned.headers])} ${await unsigned.text()}`,
+      );
       return out;
     };
     const unknownBefore = await snapshot(TAG_1);
@@ -329,5 +337,165 @@ describe('POST /api/v1/tags/:tag/claim (SPOOL-191)', () => {
     const res = await request(`/api/v1/tags/${TAG_1}`, { headers: bearer });
     expect(res.status).toBe(404);
     expect(await res.text()).toBe(JSON.stringify({ error: 'not_found' }));
+  });
+
+  it('refuses the reserved demo tag IDs exactly like an invalid ID', async () => {
+    const { claim, registry } = await setup();
+    const invalid = await claim('short', { location_id: SHELF });
+    const expected = `${String(invalid.status)} ${await invalid.text()}`;
+    for (const tag of [
+      DEMO_PLACE_TAGS[0]?.[1] ?? '',
+      'DEM1ZZZZZZZZ',
+      'DEM000000001',
+      'dem0abcdefgh',
+    ]) {
+      const res = await claim(tag, { location_id: SHELF });
+      expect(`${String(res.status)} ${await res.text()}`, tag).toBe(expected);
+    }
+    expect(registry(TENANT_A)).toEqual([]);
+  });
+});
+
+/** A Sql that records how each batch ended and can rewrite statements, to force races and faults. */
+function instrumented(sql: Sql, rewrite: (s: Statement) => Statement = (s) => s) {
+  const outcomes: ('ok' | 'rejected')[] = [];
+  const wrapped: Sql = {
+    all: <T extends object>(q: string, p?: readonly SqlParam[]) => sql.all<T>(q, p),
+    batch: async (statements) => {
+      try {
+        const result = await sql.batch(statements.map(rewrite));
+        outcomes.push('ok');
+        return result;
+      } catch (error) {
+        outcomes.push('rejected');
+        throw error;
+      }
+    },
+  };
+  return { wrapped, outcomes };
+}
+
+const writer = (tenantId: string): Principal => ({
+  subject: tenantId,
+  tenantId,
+  scopes: new Set([Scope.LocationsRead, Scope.InventoryWrite]),
+});
+
+describe('claimTag review round 1 (SPOOL-191)', () => {
+  it("replacing a container's tag never touches another tenant's container with the same tag", async () => {
+    const { claim, asTenant, registry } = await setup();
+    expect((await claim(TAG_1, { location_id: CONTAINER })).status).toBe(200);
+    expect(
+      (await claim(TAG_1, { location_id: CONTAINER }, { app: asTenant(TENANT_B) })).status,
+    ).toBe(200);
+    const res = await claim(TAG_2, { location_id: CONTAINER, replace: true });
+    expect(res.status).toBe(200);
+    expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_2, kind: 'location', target_id: CONTAINER }]);
+    expect(registry(TENANT_B)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: CONTAINER }]);
+  });
+
+  it('rolls the whole write back when it would change more than one row', async () => {
+    const { sql, registry, claim, asTenant } = await setup();
+    expect((await claim(TAG_1, { location_id: CONTAINER })).status).toBe(200);
+    expect(
+      (await claim(TAG_1, { location_id: CONTAINER }, { app: asTenant(TENANT_B) })).status,
+    ).toBe(200);
+    // Force a write that matches both tenants' rows by dropping its tenant condition.
+    const { wrapped } = instrumented(sql, (st) =>
+      st.query.includes('UPDATE tag SET tag_id = ?')
+        ? {
+            query: st.query.replace('WHERE tenant_id = ? AND kind', 'WHERE kind'),
+            params: [st.params?.[0] ?? null, ...(st.params ?? []).slice(2)],
+          }
+        : st,
+    );
+    await expect(
+      createScopedData(wrapped, writer(TENANT_A)).claimTag(TAG_2, CONTAINER, true),
+    ).rejects.toThrow();
+    expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: CONTAINER }]);
+    expect(registry(TENANT_B)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: CONTAINER }]);
+  });
+
+  it('two claims racing for an untagged container: one wins, the other is a conflict, no error', async () => {
+    const { sql, registry } = await setup();
+    const { wrapped, outcomes } = instrumented(sql);
+    const data = () => createScopedData(wrapped, writer(TENANT_A));
+    const results = await Promise.all([
+      data().claimTag(TAG_1, CONTAINER, false),
+      data().claimTag(TAG_2, CONTAINER, false),
+    ]);
+    expect(results.map((r) => (r.ok ? 'ok' : r.refusal))).toEqual(['ok', 'conflict']);
+    expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: CONTAINER }]);
+    // The guarded insert stored nothing and raised nothing.
+    expect(outcomes).toEqual(['ok', 'ok']);
+  });
+
+  it("answers conflict, not an error, when the registry's one-tag-per-record index refuses the write", async () => {
+    const { sql, registry, db } = await setup();
+    // Without the statement's own guard, the unique index on (tenant, kind, target) is what refuses it.
+    const { wrapped, outcomes } = instrumented(sql, (st) => ({
+      ...st,
+      query: st.query.replace(
+        /AND NOT EXISTS \(SELECT 1 FROM tag t[\s\S]*?t\.target_id = l\.id\)/,
+        '',
+      ),
+    }));
+    db.prepare(
+      "INSERT INTO tag (tenant_id, tag_id, kind, target_id) VALUES (?, ?, 'location', ?)",
+    ).run(TENANT_A, TAG_3, CONTAINER);
+    // The read happens before the competing row exists, as in a race.
+    const racing: Sql = {
+      all: async <T extends object>(q: string, p?: readonly SqlParam[]) => {
+        const rows = await sql.all<T>(q, p);
+        return q.includes("kind = 'location' AND target_id") ? [] : rows;
+      },
+      batch: (statements) => wrapped.batch(statements),
+    };
+    const result = await createScopedData(racing, writer(TENANT_A)).claimTag(
+      TAG_1,
+      CONTAINER,
+      false,
+    );
+    expect(result).toEqual({ ok: false, refusal: 'conflict' });
+    expect(outcomes).toEqual(['rejected']);
+    expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_3, kind: 'location', target_id: CONTAINER }]);
+  });
+
+  it("two replaces racing on a container's tag: one wins, the other is a conflict", async () => {
+    const { sql, registry, claim } = await setup();
+    expect((await claim(TAG_1, { location_id: CONTAINER })).status).toBe(200);
+    const data = () => createScopedData(sql, writer(TENANT_A));
+    const results = await Promise.all([
+      data().claimTag(TAG_2, CONTAINER, true),
+      data().claimTag(TAG_3, CONTAINER, true),
+    ]);
+    expect(results.map((r) => (r.ok ? 'ok' : r.refusal))).toEqual(['ok', 'conflict']);
+    expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_2, kind: 'location', target_id: CONTAINER }]);
+  });
+
+  it('the same ID claimed onto two leaves at once: one wins, the other is told it is in use', async () => {
+    const { sql, registry, columnTag } = await setup();
+    const data = () => createScopedData(sql, writer(TENANT_A));
+    const results = await Promise.all([
+      data().claimTag(TAG_1, SHELF, false),
+      data().claimTag(TAG_1, OTHER_SHELF, false),
+    ]);
+    expect(results.map((r) => (r.ok ? 'ok' : r.refusal))).toEqual(['ok', 'tag_in_use']);
+    expect(columnTag(TENANT_A, SHELF)).toBe(TAG_1);
+    expect(columnTag(TENANT_A, OTHER_SHELF)).toBeNull();
+    expect(registry(TENANT_A)).toEqual([{ tag_id: TAG_1, kind: 'location', target_id: SHELF }]);
+  });
+
+  it('the data layer itself refuses a caller without the write scope', async () => {
+    const { sql, registry } = await setup();
+    const readOnly: Principal = {
+      subject: 'r',
+      tenantId: TENANT_A,
+      scopes: new Set([Scope.LocationsRead]),
+    };
+    await expect(
+      createScopedData(sql, readOnly).claimTag(TAG_1, SHELF, false),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(registry(TENANT_A)).toEqual([]);
   });
 });

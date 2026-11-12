@@ -4,15 +4,16 @@
 // places. It never touches anything that is not its own, and it records no weight, cost or usage.
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { DEMO_CLIP_TAG_PREFIX, DEMO_PLACE_TAG_PREFIX } from '../data/tags.ts';
 
 /** Marks every demo row: the filament's manufacturer, and the "DEM0" start of each clip tag. */
 export const DEMO_MANUFACTURER = 'SpoolSpot demo';
-const TAG_PREFIX = 'DEM0';
+const TAG_PREFIX = DEMO_CLIP_TAG_PREFIX;
 /** Fixed place tags for phone demos: "DEM1" and eight digits (valid tag IDs; clips use "DEM0"). */
 export const DEMO_PLACE_TAGS: readonly (readonly [string, string])[] = [
-  ['loc1.shelf-1', 'DEM100000001'],
-  ['loc1.shelf-2', 'DEM100000002'],
-  ['closet-storage.shelf-1', 'DEM100000003'],
+  ['loc1.shelf-1', `${DEMO_PLACE_TAG_PREFIX}00000001`],
+  ['loc1.shelf-2', `${DEMO_PLACE_TAG_PREFIX}00000002`],
+  ['closet-storage.shelf-1', `${DEMO_PLACE_TAG_PREFIX}00000003`],
 ];
 /** Closet shelf 1 gets a small soft capacity so the "over a soft limit" notice can be shown. */
 const SOFT_DEMO_LOCATION = 'closet-storage.shelf-1';

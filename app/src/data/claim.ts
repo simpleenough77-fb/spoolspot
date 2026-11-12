@@ -9,7 +9,7 @@
 // bound to the caller's tenant. A tag ID is unique per tenant (SPOOL-177), so the same ID in another
 // tenant neither blocks a claim nor is revealed by one.
 import type { Sql } from '../db/sql.ts';
-import { isTagConflict, normalizeTagId } from './tags.ts';
+import { isReservedTagId, isTagConflict, isTargetTagConflict, normalizeTagId } from './tags.ts';
 
 export type ClaimRefusal =
   | 'invalid_tag'
@@ -35,6 +35,18 @@ export interface ClaimOps {
   claimTag(tagId: string, locationId: string, replace: boolean): Promise<ClaimResult>;
 }
 
+/**
+ * Runs in the same atomic batch, straight after the claim's write. Every write is keyed to one record,
+ * so it changes at most one row; if it ever changed more, this statement fails (a NULL into the
+ * registry's NOT NULL key) and the whole batch rolls back, so nothing is stored. changes() counts the
+ * previous statement only, not rows its triggers touched. Zero rows is the normal "someone else got
+ * there first" case and is reported as a conflict.
+ */
+const MORE_THAN_ONE_ROW_ABORTS = {
+  query: `INSERT INTO tag (tenant_id, tag_id, kind, target_id)
+          SELECT NULL, NULL, NULL, NULL WHERE changes() > 1`,
+} as const;
+
 export function createClaimOps(deps: {
   sql: Sql;
   tenantId: string;
@@ -45,7 +57,8 @@ export function createClaimOps(deps: {
     async claimTag(tagText, locationId, replace) {
       deps.requireWrite();
       const tagId = normalizeTagId(tagText);
-      if (tagId === null) return { ok: false, refusal: 'invalid_tag' };
+      // The fixed demo IDs are public and owned by the demo data; they are refused like any invalid ID.
+      if (tagId === null || isReservedTagId(tagId)) return { ok: false, refusal: 'invalid_tag' };
       const places = await sql.all<{ leaf: number }>(
         'SELECT leaf FROM location WHERE tenant_id = ? AND id = ?',
         [tenantId, locationId],
@@ -103,11 +116,14 @@ export function createClaimOps(deps: {
       }
       let changed: number;
       try {
-        [changed = 0] = await sql.batch([statement]);
+        [changed = 0] = await sql.batch([statement, MORE_THAN_ONE_ROW_ABORTS]);
       } catch (error) {
         if (isTagConflict(error)) return { ok: false, refusal: 'tag_in_use' };
+        // The place got a tag from another request between the check and the write.
+        if (isTargetTagConflict(error)) return { ok: false, refusal: 'conflict' };
         throw error;
       }
+      if (changed > 1) throw new Error('tag claim changed more than one row');
       return changed === 1 ? done(true) : { ok: false, refusal: 'conflict' };
     },
   };
