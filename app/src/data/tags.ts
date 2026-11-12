@@ -23,6 +23,33 @@ export function normalizeTagId(text: string): string | null {
   return TAG_INPUT.test(text) ? text.toUpperCase() : null;
 }
 
+/** Prefix of the fixed public demo clip tags (app/src/seed/demo.ts). */
+export const DEMO_CLIP_TAG_PREFIX = 'DEM0';
+/** Prefix of the fixed public demo place tags (app/src/seed/demo.ts). */
+export const DEMO_PLACE_TAG_PREFIX = 'DEM1';
+/** Tag IDs set aside for the removable demo data: never claimed for a real record. */
+export const RESERVED_TAG_PREFIXES: readonly string[] = [
+  DEMO_CLIP_TAG_PREFIX,
+  DEMO_PLACE_TAG_PREFIX,
+];
+
+/** True for a canonical tag ID in a reserved range. */
+export function isReservedTagId(tagId: string): boolean {
+  return RESERVED_TAG_PREFIXES.some((prefix) => tagId.startsWith(prefix));
+}
+
+/**
+ * True when a write failed because the record already has a registry row: the unique index on
+ * (tenant_id, kind, target_id) of the tag registry. Not a clash of the ID itself, so it is never
+ * retried with a fresh ID.
+ */
+export function isTargetTagConflict(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /UNIQUE constraint failed: tag\.tenant_id, tag\.kind, tag\.target_id\b/.test(error.message)
+  );
+}
+
 /**
  * True when a write failed because the tag ID is already used in this tenant: the unique index on
  * (tenant_id, tag_id) of the registry, or of the clip or location column. A clash on a record's own ID

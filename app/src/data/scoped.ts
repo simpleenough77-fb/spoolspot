@@ -16,6 +16,7 @@ import {
   type PlacementPreference,
   type PlacementSuggestion,
 } from './tree.ts';
+import { createClaimOps, type ClaimOps } from './claim.ts';
 import { eventInsert, guardCondition, InvalidEventError } from './events.ts';
 import { createStockOps, type StockOps } from './stock.ts';
 import { normalizeTagId } from './tags.ts';
@@ -101,7 +102,7 @@ export type MoveResult =
   | { ok: true; moved: boolean; clip: ClipSummary; check: PlacementCheck }
   | { ok: false; refusal: MoveRefusal; check?: PlacementCheck };
 
-export interface ScopedData extends StockOps {
+export interface ScopedData extends StockOps, ClaimOps {
   /**
    * The clip or location a tag stands for; null for a malformed, unknown or other tenant's tag. For a
    * container tag, `heldClipId` (the clip the person is holding) ranks the suggested leaf; an unknown
@@ -256,8 +257,10 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     requireWrite,
     findNode: async (id) => [...flatten(await loadTree())].find((n) => n.id === id),
   });
+  const claims = createClaimOps({ sql, tenantId, requireWrite });
   return {
     ...stock,
+    ...claims,
     async tagView(tagId, heldClipId) {
       require(Scope.LocationsRead);
       const target = await resolve(tagId);
