@@ -200,6 +200,54 @@ describe('demo data', () => {
       expect(db.prepare('SELECT clip_id FROM event').all()).toEqual([{ clip_id: user.clip }]);
     });
 
+    it('refuses when more than one filament matches the demo fingerprint', async () => {
+      const { db } = await setup();
+      fillDemo(db, TENANT_A);
+      const color = (
+        db.prepare('SELECT color FROM filament WHERE manufacturer = ?').get(DEMO_MANUFACTURER) as {
+          color: string;
+        }
+      ).color;
+      db.prepare(
+        "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, '00000000-0000-4000-8000-00000000f002', ?, 'PLA', ?, 'disposable')",
+      ).run(TENANT_A, DEMO_MANUFACTURER, color === 'Demo' ? 'Demo (capacity set)' : 'Demo');
+      const before = snapshot(db);
+      expect(() => removeDemo(db, TENANT_A)).toThrow(/more than one/);
+      expect(snapshot(db)).toEqual(before);
+    });
+
+    it('runs its own closing check, so a grant it failed to close is never committed', async () => {
+      const { db, sql } = await setup();
+      fillDemo(db, TENANT_A);
+      const [demoClip] = db
+        .prepare("SELECT id FROM clip WHERE tag_id LIKE 'DEM0%' AND location_id = 'loc1.shelf-1' LIMIT 1")
+        .all() as { id: string }[];
+      expect(await writer(sql).moveClip(demoClip?.id ?? '', 'closet-storage.shelf-1', false)).toMatchObject({
+        ok: true,
+      });
+      // Foreign keys off removes the deferred-key closer; the grant close is made to do nothing.
+      db.exec('PRAGMA foreign_keys = OFF');
+      const skipsClose = new Proxy(db, {
+        get(target, key) {
+          if (key === 'prepare') {
+            return (query: string) =>
+              /^DELETE FROM event_delete_grant\b/.test(query.trim())
+                ? { run: () => ({ changes: 0, lastInsertRowid: 0 }) }
+                : target.prepare(query);
+          }
+          const value: unknown = Reflect.get(target, key);
+          return typeof value === 'function'
+            ? (value as (...a: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      });
+      const before = snapshot(db);
+      expect(() => removeDemo(skipsClose, TENANT_A)).toThrow(/grant left open/);
+      db.exec('PRAGMA foreign_keys = ON');
+      expect(snapshot(db)).toEqual(before);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM event_delete_grant').get()).toMatchObject({ n: 0 });
+    });
+
     it('refuses, changing nothing, when boxed stock was added to the demo filament elsewhere', async () => {
       const { db } = await setup();
       fillDemo(db, TENANT_A);
