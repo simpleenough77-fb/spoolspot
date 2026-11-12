@@ -118,6 +118,92 @@ const stillAt = (from: string | null, to: string, confirm = false): EventGuard =
   hardLimit: { destinationId: to, confirm },
 });
 
+// The event table named as a table: bare, "quoted", 'quoted', `quoted` or [bracketed], optionally
+// schema-qualified (main.event, "main"."event"). SQL comments and parentheses may sit in between.
+const GAP = String.raw`(?:\s|\(|/\*[\s\S]*?\*/|--[^\n]*\n)*`;
+const QUALIFIER = String.raw`(?:(?:"[^"]*"|'[^']*'|${'`'}[^${'`'}]*${'`'}|\[[^\]]*\]|[A-Za-z_]\w*)\s*\.\s*)?`;
+const EVENT_NAME = String.raw`(?:"event"|'event'|${'`'}event${'`'}|\[event\]|event(?![\w$]))`;
+const READS_EVENT = [
+  // FROM event, JOIN event
+  new RegExp(String.raw`\b(?:FROM|JOIN)(?![\w$])${GAP}${QUALIFIER}${EVENT_NAME}`, 'i'),
+  // FROM clip c, event e: a comma join later in the same FROM list
+  new RegExp(
+    String.raw`\bFROM(?![\w$])(?:(?!\b(?:WHERE|GROUP|ORDER|LIMIT|HAVING|UNION|SELECT|SET|VALUES|ON)\b)[^;()=]){0,200}?,${GAP}${QUALIFIER}${EVENT_NAME}`,
+    'i',
+  ),
+];
+
+function readsEventTable(source: string): boolean {
+  return READS_EVENT.some((re) => re.test(source));
+}
+
+/** Every non-test source file under app/src, recursively. */
+function sourceFiles(dir = 'app/src'): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return entry.isFile() && !/\.test\.[cm]?[jt]s$/.test(entry.name) ? [path] : [];
+  });
+}
+
+function eventTableReaders(): string[] {
+  return sourceFiles().filter((f) => readsEventTable(readFileSync(f, 'utf8')));
+}
+
+describe('the scan for event-table reads (review round 1)', () => {
+  it('flags the quoted, bracketed, backticked, schema-qualified and joined forms', () => {
+    for (const sql of [
+      'SELECT * FROM event',
+      'select id from event where tenant_id = ?',
+      'SELECT * FROM "event"',
+      "SELECT * FROM 'event'",
+      'SELECT * FROM `event`',
+      'SELECT * FROM [event]',
+      'SELECT * FROM main.event',
+      'SELECT * FROM main . "event"',
+      'SELECT * FROM "main"."event"',
+      'SELECT * FROM temp.[event]',
+      'SELECT * FROM clip c JOIN [event] e ON e.clip_id = c.id',
+      'SELECT * FROM clip c LEFT JOIN main.event e ON 1',
+      'SELECT * FROM /* hidden */ event',
+      'SELECT * FROM\n  -- note\n  event',
+      'SELECT * FROM (event)',
+      'SELECT * FROM"event"',
+      'SELECT * FROM clip c, event e WHERE e.clip_id = c.id',
+      'SELECT * FROM clip c, main."event" e',
+      'SELECT * FROM "main"."clip" c, event e',
+    ]) {
+      expect(readsEventTable(sql), sql).toBe(true);
+    }
+  });
+
+  it('does not flag the allowed writer or names that only start with event', () => {
+    for (const sql of [
+      'INSERT INTO event (tenant_id, id) SELECT ?, ?',
+      'SELECT * FROM eventual',
+      'SELECT * FROM event_by_filament',
+      'SELECT * FROM clip c WHERE c.id = ?',
+      'SELECT a, event FROM clip',
+    ]) {
+      expect(readsEventTable(sql), sql).toBe(false);
+    }
+    expect(readsEventTable(readFileSync('app/src/data/events.ts', 'utf8'))).toBe(false);
+  });
+
+  it('walks every non-test file under app/src, nested folders included', () => {
+    const files = sourceFiles();
+    expect(files).toEqual(
+      expect.arrayContaining([
+        join('app/src/data/events.ts'),
+        join('app/src/http/app.ts'),
+        join('app/src/db/migrate.ts'),
+        join('app/src/server.ts'),
+      ]),
+    );
+    expect(files.some((f) => f.endsWith('.test.ts'))).toBe(false);
+  });
+});
+
 describe('eventInsert', () => {
   it('knows exactly the event types of the schema CHECK and schema/event.schema.json', () => {
     const { db } = memoryDatabase();
@@ -387,13 +473,9 @@ describe('the event log across tenants', () => {
     for (const secret of secrets) expect(seen).not.toContain(secret);
     expect(s.events(TENANT_B)).toHaveLength(0);
 
-    // No data-layer module reads the event table today. A future read path must arrive with its own
+    // No module under app/src reads the event table today. A future read path must arrive with its own
     // cross-tenant test (SPOOL-75 gate); this check fails until it does, so it cannot slip in unseen.
-    const dir = 'app/src/data';
-    const readers = readdirSync(dir)
-      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-      .filter((f) => /\b(FROM|JOIN)\s+event\b/i.test(readFileSync(join(dir, f), 'utf8')));
-    expect(readers).toEqual([]);
+    expect(eventTableReaders()).toEqual([]);
   });
 });
 
