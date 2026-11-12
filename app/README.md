@@ -7,6 +7,10 @@ The SpoolSpot application (TypeScript, Hono, SQLite; see the decisions index).
 
 Development: `pnpm db:migrate`, `pnpm seed:import`, `pnpm dev` (set `SPOOLSPOT_DEV_TOKEN`).
 
+## Database access
+
+Application code reaches the database only through the SQL adapter (`src/db/sqlite.ts`), and the adapter runs only data statements: a read goes through `all()` and must be a `SELECT` (or `WITH ... SELECT`); a batch may hold `INSERT`, `UPDATE`, `DELETE`, `SELECT` and `WITH` statements. Pragmas, schema changes, attaching databases, maintenance commands, transaction control, `REPLACE` writes and more than one statement in a string are refused with a `StatementNotAllowedError` before anything in the call runs. Migrations use their own path. The check looks at the start and shape of each statement; it is not a SQL parser, so it guards against mistakes, not against someone who controls the SQL text (queries are never built from user input). If a rollback fails and the connection has to be dropped, the server exits with a one-line reason so its supervisor can restart it and the startup checks run again; run it under a supervisor that restarts it (systemd, Docker `restart: unless-stopped` or similar).
+
 ## Location tree and placement (development preview)
 
 The page shows Home, containers and leaf locations, collapsible. Each leaf shows used, capacity and free with a hard or soft badge; a leaf with no capacity says "Capacity not set" and is never suggested. Used is derived from what is stored at the location (boxed counts plus clips); nothing is typed in.

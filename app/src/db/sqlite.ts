@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { GRANT_CLOSED_CHECK, GrantCloseCheckError, hasGrantCloser } from './integrity.ts';
 import type { Sql, SqlParam, Statement } from './sql.ts';
+import { assertData, assertRead } from './statement-guard.ts';
 
 function attempt<T>(fn: () => T): Promise<T> {
   try {
@@ -71,7 +72,21 @@ function inTransaction(db: DatabaseSync): boolean {
   return false;
 }
 
-export function sqlFromDatabase(db: DatabaseSync): Sql {
+export interface SqlOptions {
+  /**
+   * Called once, right after the connection was closed because a rollback failed inside a
+   * transaction. The server exits here so its supervisor restarts it and the startup check runs
+   * again (SPOOL-199); scripts leave it unset and fail with the original error.
+   */
+  readonly onUnusable?: () => void;
+}
+
+/**
+ * The application's database surface. Only data statements pass (statement-guard.ts): `all()` runs
+ * reads, `batch()` runs INSERT, UPDATE, DELETE, SELECT and WITH. Migrations and the adapter's own
+ * transaction control use the database handle directly.
+ */
+export function sqlFromDatabase(db: DatabaseSync, options: SqlOptions = {}): Sql {
   // Set when a rollback fails: the connection may still be inside a half-done transaction (with an
   // event delete grant visible to it), so it is closed and never used again. Restart to recover.
   let unusable = false;
@@ -87,12 +102,15 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
     all<T extends object>(query: string, params?: readonly SqlParam[]): Promise<T[]> {
       return attempt(() => {
         usable();
+        assertRead(query);
         return db.prepare(query).all(...bind(params)) as T[];
       });
     },
     batch(statements: readonly Statement[]): Promise<number[]> {
       return attempt(() => {
         usable();
+        // Every statement is checked before the transaction starts: a refused batch runs nothing.
+        for (const s of statements) assertData(s.query);
         db.exec('BEGIN IMMEDIATE');
         try {
           const changes: number[] = [];
@@ -125,6 +143,7 @@ export function sqlFromDatabase(db: DatabaseSync): Sql {
               } catch {
                 /* already unusable */
               }
+              options.onUnusable?.();
             }
           }
           throw error;
