@@ -287,6 +287,62 @@ describe('migration 0004: boxed stock at passive storage only', () => {
     expect(
       db.prepare(`SELECT filament_id, pack FROM stock_line WHERE ${at('passive-storage')}`).get(),
     ).toEqual({ filament_id: other, pack: 'refill' });
+    // The line left off passive storage may be moved onto a passive place.
+    db.prepare(
+      `UPDATE stock_line SET location_id = 'passive-storage' WHERE ${at('active-storage')}`,
+    ).run();
+    expect(
+      db
+        .prepare(
+          `SELECT filament_id, pack, count FROM stock_line WHERE ${at('passive-storage')} ORDER BY pack`,
+        )
+        .all(),
+    ).toEqual([
+      { filament_id: other, pack: 'refill', count: 1 },
+      { filament_id: fa, pack: 'spool', count: 1 },
+    ]);
+    expect(stockOffPassive(db)).toEqual([]);
+  });
+
+  it('reads through the WAL while the server has the database open, and still refuses writes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spoolspot-ro-'));
+    try {
+      const path = join(dir, 'spoolspot.db');
+      // The server's connection stays open, so -wal and -shm exist and new commits sit in the WAL.
+      const server = openDatabase(path);
+      runMigrations(server);
+      const f = populate(server, TENANT_A);
+      insertLine(server, TENANT_A, f, 'passive-storage', 'spool', 1);
+      expect(readdirSync(dir).sort()).toEqual([
+        'spoolspot.db',
+        'spoolspot.db-shm',
+        'spoolspot.db-wal',
+      ]);
+      const mainBytes = readFileSync(path);
+      const reader = openDatabaseReadOnly(path);
+      try {
+        expect(() => {
+          reader.exec("INSERT INTO tenant_settings (tenant_id) VALUES ('intruder')");
+        }).toThrow(/readonly/);
+        const count = () =>
+          (reader.prepare('SELECT COUNT(*) AS n FROM stock_line').get() as { n: number }).n;
+        expect(count()).toBe(1);
+        // A commit the server makes afterwards is seen (not an immutable snapshot).
+        insertLine(server, TENANT_A, f, 'passive-storage', 'refill', 1);
+        expect(count()).toBe(2);
+      } finally {
+        reader.close();
+      }
+      expect(readFileSync(path).equals(mainBytes)).toBe(true);
+      expect(
+        server
+          .prepare("SELECT COUNT(*) AS n FROM tenant_settings WHERE tenant_id = 'intruder'")
+          .get(),
+      ).toMatchObject({ n: 0 });
+      server.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('the listing script reads without changing the database file or creating side files', () => {
