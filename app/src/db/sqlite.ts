@@ -2,9 +2,10 @@
 // Node adapter: node:sqlite behind the Sql interface (ADR-0003 prefers it over a native module).
 // node:sqlite is still marked experimental on Node 22 and a release candidate on Node 24; this file is
 // the only place that touches it, so a swap to better-sqlite3 is a one-file change (recorded on SPOOL-131).
-import { chmodSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 import { GRANT_CLOSED_CHECK, GrantCloseCheckError, hasGrantCloser } from './integrity.ts';
 import type { Sql, SqlParam, Statement } from './sql.ts';
 
@@ -44,6 +45,21 @@ export function openDatabase(path: string): DatabaseSync {
     chmodSync(path, 0o600);
   }
   return db;
+}
+
+/**
+ * Open an existing database file for reading only, for operator scripts (SPOOL-200). Nothing is created
+ * or changed: no directory, no journal-mode pragma, no chmod, and every write is refused. When no WAL
+ * file is present the database was closed cleanly, so it is opened immutable and SQLite creates no
+ * -wal or -shm file either. When a WAL file is present (the server is running, or did not shut down
+ * cleanly) it is read through the WAL, so nothing committed is missed; its side files already exist.
+ */
+export function openDatabaseReadOnly(path: string): DatabaseSync {
+  if (!existsSync(path)) throw new Error(`no database at ${path}`);
+  const url = pathToFileURL(path);
+  url.searchParams.set('mode', 'ro');
+  if (!existsSync(`${path}-wal`)) url.searchParams.set('immutable', '1');
+  return new DatabaseSync(url, { readOnly: true });
 }
 
 /** The connection was dropped after a rollback failed inside a transaction. Restart to recover. */
