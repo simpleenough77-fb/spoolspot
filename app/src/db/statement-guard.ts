@@ -20,8 +20,9 @@ export class StatementNotAllowedError extends Error {
 
 /**
  * The statement with comments removed and every string literal and quoted identifier replaced by a
- * blank placeholder, so keywords inside them are not mistaken for code; the contents of the quoted
- * identifiers ("", ``, []) are returned separately, because a quoted name is still a name. Refuses
+ * blank placeholder, so keywords inside them are not mistaken for code. The contents of every quoted
+ * text are returned separately, because a quoted name is still a name: single quotes included, since
+ * SQLite reads a single-quoted string as a name where only a name can go. Refuses
  * text whose quote or comment is never closed: such text is malformed, and guessing where it ends
  * could hide a statement.
  */
@@ -56,7 +57,7 @@ function codeOf(query: string): { code: string; quotedNames: string[] } {
         j = end + 1;
         break;
       }
-      if (c !== "'") quotedNames.push(query.slice(i + 1, j - 1).replaceAll(close + close, close));
+      quotedNames.push(query.slice(i + 1, j - 1).replaceAll(close + close, close));
       out += ' _ ';
       i = j;
     } else {
