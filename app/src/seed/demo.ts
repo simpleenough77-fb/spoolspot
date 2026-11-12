@@ -33,11 +33,70 @@ function clipTag(n: number): string {
   return `${TAG_PREFIX}${String(n).padStart(8, '0')}`;
 }
 
+/** Demo removal stopped because something it would delete is not demo data. Nothing was changed. */
+export class DemoRemovalRefused extends Error {
+  constructor(reason: string) {
+    super(`demo removal refused, nothing changed: ${reason}`);
+    this.name = 'DemoRemovalRefused';
+  }
+}
+
+/** Every demo clip tag: the prefix and eight digits (see clipTag). */
+const DEMO_CLIP_TAG_GLOB = `${TAG_PREFIX}[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]`;
+
+/**
+ * The demo filament, found by its whole fingerprint (manufacturer, type, one of the two demo colours,
+ * disposable), not by its name alone. The catalog import refuses the demo manufacturer name, but a
+ * database may hold one from before; more than one match is refused rather than guessed.
+ */
 function demoFilament(db: DatabaseSync, tenantId: string): string | undefined {
-  const row = db
-    .prepare('SELECT id FROM filament WHERE tenant_id = ? AND manufacturer = ?')
-    .get(tenantId, DEMO_MANUFACTURER) as { id: string } | undefined;
-  return row?.id;
+  const rows = db
+    .prepare(
+      `SELECT id FROM filament
+        WHERE tenant_id = ? AND manufacturer = ? AND type = 'PLA' AND color IN (?, ?)
+          AND spool_kind = 'disposable'`,
+    )
+    .all(tenantId, DEMO_MANUFACTURER, COLOR_PLAIN, COLOR_CAPACITY_SET) as { id: string }[];
+  if (rows.length > 1) throw new DemoRemovalRefused('more than one filament looks like the demo');
+  return rows[0]?.id;
+}
+
+/**
+ * Refuses unless everything the removal would delete is demo data: every clip of the demo filament
+ * carries a demo clip tag, and every event about the demo filament or its clips names a demo clip and
+ * the demo filament (or no filament). An event with no clip, a real clip or another filament is the
+ * person's history, so the whole removal stops instead.
+ */
+function assertOnlyDemo(db: DatabaseSync, tenantId: string, filament: string): void {
+  const realClip = db
+    .prepare(
+      'SELECT 1 AS n FROM clip WHERE tenant_id = ? AND filament_id = ? AND tag_id NOT GLOB ? LIMIT 1',
+    )
+    .get(tenantId, filament, DEMO_CLIP_TAG_GLOB);
+  if (realClip !== undefined) throw new DemoRemovalRefused('a clip of this filament is not a demo clip');
+  const demoClips = `SELECT k.id FROM clip k
+                      WHERE k.tenant_id = ? AND k.filament_id = ? AND k.tag_id GLOB ?`;
+  const notDemo = db
+    .prepare(
+      `SELECT 1 AS n FROM event e
+        WHERE e.tenant_id = ?
+          AND (e.filament_id = ? OR e.clip_id IN (${demoClips}))
+          AND NOT (e.clip_id IS NOT NULL AND e.clip_id IN (${demoClips})
+                   AND (e.filament_id IS NULL OR e.filament_id = ?))
+        LIMIT 1`,
+    )
+    .get(
+      tenantId,
+      filament,
+      tenantId,
+      filament,
+      DEMO_CLIP_TAG_GLOB,
+      tenantId,
+      filament,
+      DEMO_CLIP_TAG_GLOB,
+      filament,
+    );
+  if (notDemo !== undefined) throw new DemoRemovalRefused('an event about the demo is not demo history');
 }
 
 /** Adds the demo items. Safe to run twice: the second run changes nothing. */
@@ -124,8 +183,9 @@ export function removeDemo(db: DatabaseSync, tenantId: string): number {
         | { color: string }
         | undefined
     )?.color === COLOR_CAPACITY_SET;
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
+    assertOnlyDemo(db, tenantId, filament);
     // Events first (they reference the demo clips and filament), and the grant is closed before the
     // filament it names is deleted.
     for (const s of guardedEventDelete(tenantId, { scope: 'filament', filamentId: filament })) {

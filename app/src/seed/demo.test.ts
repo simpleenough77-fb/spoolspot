@@ -4,7 +4,7 @@ import { createScopedData } from '../data/scoped.ts';
 import { Scope } from '../auth/principal.ts';
 import { memoryDatabase, readJson, readSeed, SEED_SCHEMA_PATH, TENANT_A, TENANT_B } from '../testing.ts';
 import { importSeed } from './import.ts';
-import { DEMO_MANUFACTURER, fillDemo, removeDemo } from './demo.ts';
+import { DEMO_MANUFACTURER, DemoRemovalRefused, fillDemo, removeDemo } from './demo.ts';
 import type { LocationNode } from '../data/tree.ts';
 
 async function setup() {
@@ -140,6 +140,90 @@ describe('demo data', () => {
       { id: '00000000-0000-4000-8000-0000000d0001' },
     ]);
     expect(db.prepare('SELECT COUNT(*) AS n FROM event_delete_grant').get()).toMatchObject({ n: 0 });
+  });
+
+  describe('never removes what is not the demo (review round 1)', () => {
+    type Db = Awaited<ReturnType<typeof setup>>['db'];
+    const writer = (sql: Awaited<ReturnType<typeof setup>>['sql']) =>
+      createScopedData(sql, {
+        subject: 's',
+        tenantId: TENANT_A,
+        scopes: new Set([Scope.LocationsRead, Scope.InventoryWrite]),
+      });
+    /** A person's own filament that happens to carry the demo manufacturer name, with a moved clip. */
+    async function userLookalike(
+      db: Db,
+      sql: Awaited<ReturnType<typeof setup>>['sql'],
+      color: string,
+    ) {
+      const filament = '00000000-0000-4000-8000-00000000f001';
+      db.prepare(
+        "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, ?, 'PLA', ?, 'disposable')",
+      ).run(TENANT_A, filament, DEMO_MANUFACTURER, color);
+      const clip = '00000000-0000-4000-8000-00000000c001';
+      db.prepare(
+        "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, 'loc1.shelf-1', 'on_spool')",
+      ).run(TENANT_A, clip, 'SKQT0000C001', filament);
+      expect(await writer(sql).moveClip(clip, 'closet-storage.shelf-1', false)).toMatchObject({
+        ok: true,
+      });
+      return { filament, clip };
+    }
+    const snapshot = (db: Db) =>
+      ['filament', 'clip', 'event', 'stock_line', 'tag'].map(
+        (t) => (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n,
+      );
+
+    it('leaves a user filament named like the demo alone when there is no demo', async () => {
+      const { db, sql } = await setup();
+      await userLookalike(db, sql, 'Galaxy');
+      const before = snapshot(db);
+      expect(removeDemo(db, TENANT_A)).toBe(0);
+      expect(snapshot(db)).toEqual(before);
+    });
+
+    it('refuses, changing nothing, when the demo fingerprint matches a filament with real clips', async () => {
+      const { db, sql } = await setup();
+      await userLookalike(db, sql, 'Demo');
+      const before = snapshot(db);
+      expect(() => removeDemo(db, TENANT_A)).toThrow(DemoRemovalRefused);
+      expect(snapshot(db)).toEqual(before);
+    });
+
+    it('removes only the demo when a lookalike user filament is there too', async () => {
+      const { db, sql } = await setup();
+      const user = await userLookalike(db, sql, 'Galaxy');
+      fillDemo(db, TENANT_A);
+      expect(removeDemo(db, TENANT_A)).toBe(27);
+      expect(db.prepare('SELECT id FROM filament').all()).toEqual([{ id: user.filament }]);
+      expect(db.prepare('SELECT id FROM clip').all()).toEqual([{ id: user.clip }]);
+      expect(db.prepare('SELECT clip_id FROM event').all()).toEqual([{ clip_id: user.clip }]);
+    });
+
+    it('refuses when an event names a demo clip with another filament, or the demo filament with no clip', async () => {
+      // Rule: demo removal deletes an event only when its clip is a demo clip and its filament is the
+      // demo filament (or empty). Anything else touching the demo is not demo history: stop, change nothing.
+      for (const variant of ['real filament, demo clip', 'demo filament, no clip'] as const) {
+        const { db, sql } = await setup();
+        const user = await userLookalike(db, sql, 'Galaxy');
+        fillDemo(db, TENANT_A);
+        const demo = db
+          .prepare(
+            "SELECT c.id AS clip, c.filament_id AS filament FROM clip c WHERE c.tag_id LIKE 'DEM0%' LIMIT 1",
+          )
+          .get() as { clip: string; filament: string };
+        db.prepare(
+          "INSERT INTO event (tenant_id, id, type, clip_id, filament_id) VALUES (?, '00000000-0000-4000-8000-00000000e001', 'open', ?, ?)",
+        ).run(
+          TENANT_A,
+          variant === 'real filament, demo clip' ? demo.clip : null,
+          variant === 'real filament, demo clip' ? user.filament : demo.filament,
+        );
+        const before = snapshot(db);
+        expect(() => removeDemo(db, TENANT_A), variant).toThrow(DemoRemovalRefused);
+        expect(snapshot(db), variant).toEqual(before);
+      }
+    });
   });
 
   it('marks everything it adds as demo', async () => {
