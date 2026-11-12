@@ -34,6 +34,8 @@ function htmlFiles(dir: string): string[] {
 }
 
 const PLACE_TAG = 'SKQT00000001';
+/** A container tag (SPOOL-191): a tag registry row only, on Location 1 (two active shelves). */
+const CONTAINER_TAG = 'SKQT00000002';
 const TENANT = '3b1c0d1e-5a1e-4c63-9a0e-5b2a6f0c7d11';
 // A throwaway token for this scan only: it protects an in-memory database that lives for seconds.
 const CODE = 'A11Y01';
@@ -87,6 +89,9 @@ async function scanApp() {
   db.prepare(
     "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, '00000000-0000-4000-8000-0000000000bb', 'S00000000099', ?, 'loc1.shelf-2', 'on_spool')",
   ).run(TENANT, filament);
+  db.prepare(
+    "INSERT INTO tag (tenant_id, tag_id, kind, target_id) VALUES (?, ?, 'location', 'loc1')",
+  ).run(TENANT, CONTAINER_TAG);
   // The real app with the real static handler, so the CSP header and module scripts are exercised.
   return createApp({
     auth: createDevTokenProvider({ token: SCAN_TOKEN, tenantId: TENANT }),
@@ -386,6 +391,22 @@ try {
     );
     violations += await axe(tab, `tap (${scheme}, place card)`);
     violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, place card)`);
+    // A container tag: the card must render (not "data this page does not understand").
+    await tab.goto(`${tapBase}/${CODE}${CONTAINER_TAG}`);
+    await tab.waitForFunction(() => {
+      const shown = document.getElementById('tag-card')?.hidden === false;
+      const said = document.getElementById('tap-status')?.textContent ?? '';
+      return shown || (said !== '' && said !== 'Loading…');
+    });
+    violations += expectText(
+      (await tab.locator('#tag-card').isVisible())
+        ? await tab.locator('#tag-heading').innerText()
+        : `(no card) ${await tab.locator('#tap-status').innerText()}`,
+      'Location 1',
+      'a container tag shows the container name',
+    );
+    violations += await axe(tab, `tap (${scheme}, container card)`);
+    violations += await reflow(tab, `tap (${scheme}, 320px wide, text at 200%, container card)`);
     // Unknown tag of this instance and a wrong instance code: the same neutral message.
     await tab.goto(`${tapBase}/${CODE}SKQT0000ZZZZ`);
     await tab.locator('#tap-status:has-text("not recognised")').waitFor();
@@ -407,5 +428,5 @@ try {
 
 if (violations > 0) process.exit(1);
 console.log(
-  `${String(pages.length)} page(s), the loaded tree and placement states, the move section, boxed stock and the tag page states (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
+  `${String(pages.length)} page(s), the loaded tree and placement states, the move section, boxed stock and the tag page states including a container tag (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
 );
