@@ -14,7 +14,7 @@ import {
   type PlacementCheck,
   type PlacementSuggestion,
 } from './tree.ts';
-import { eventInsert } from './events.ts';
+import { eventInsert, guardCondition } from './events.ts';
 import { createStockOps, type StockOps } from './stock.ts';
 import { normalizeTagId } from './tags.ts';
 
@@ -247,20 +247,16 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       if (check.outcome === 'warning' && !confirm) {
         return { ok: false, refusal: 'needs_confirmation', check };
       }
-      // One atomic batch. Both statements carry the same guard, evaluated inside the write: the clip must
-      // still be where we read it, and a hard limit must still have room unless the person confirmed.
-      // If another request got there first the guard fails, nothing is stored, and we report a conflict.
-      const guard = (clipTable: string): string =>
-        `${clipTable}.location_id IS ?
-         AND (? = 1 OR NOT EXISTS (
-           SELECT 1 FROM location d
-            WHERE d.tenant_id = ${clipTable}.tenant_id AND d.id = ?
-              AND d.capacity_mode = 'hard' AND d.capacity IS NOT NULL
-              AND COALESCE((SELECT SUM(s.count) FROM stock_line s
-                             WHERE s.tenant_id = d.tenant_id AND s.location_id = d.id), 0)
-                  + (SELECT COUNT(*) FROM clip k
-                      WHERE k.tenant_id = d.tenant_id AND k.location_id = d.id) >= d.capacity))`;
-      const guardParams = [clip.location_id, confirm ? 1 : 0, destination.id];
+      // One atomic batch. Both statements carry the same guard, rendered once by events.ts and
+      // evaluated inside the write: the clip must still be where we read it, and a hard limit must still
+      // have room unless the person confirmed. If another request got there first the guard fails,
+      // nothing is stored, and we report a conflict.
+      const guard = {
+        kind: 'clipStillAt',
+        locationId: clip.location_id,
+        hardLimit: { destinationId: destination.id, confirm },
+      } as const;
+      const condition = guardCondition(principal, clip.id, guard);
       await sql.batch([
         // The guard holds only while the clip is still at clip.location_id, so `from` is that value.
         eventInsert(
@@ -272,14 +268,11 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
             fromLocationId: clip.location_id,
             toLocationId: destination.id,
           },
-          {
-            where: `EXISTS (SELECT 1 FROM clip c WHERE c.tenant_id = ? AND c.id = ? AND ${guard('c')})`,
-            params: [tenantId, clip.id, ...guardParams],
-          },
+          guard,
         ),
         {
-          query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${guard('clip')}`,
-          params: [destination.id, tenantId, clip.id, ...guardParams],
+          query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${condition.sql}`,
+          params: [destination.id, tenantId, clip.id, ...condition.params],
         },
       ]);
       const after = await clipById(clip.id);
