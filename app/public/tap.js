@@ -69,7 +69,7 @@ function validView(v) {
   }
   const l = v.location;
   return (
-    v.kind === 'location' &&
+    (v.kind === 'location' || v.kind === 'container') &&
     l !== null &&
     typeof l === 'object' &&
     typeof l.id === 'string' &&

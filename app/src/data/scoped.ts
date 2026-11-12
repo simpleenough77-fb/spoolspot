@@ -68,7 +68,7 @@ export type TagView =
   | { kind: 'clip'; clip: ClipSummary }
   | { kind: 'location'; location: LocationView }
   | {
-      kind: 'location';
+      kind: 'container';
       location: LocationView;
       /** A container tag (SPOOL-191): every leaf below it, in tree order, with its room. */
       inside: LocationView[];
@@ -273,7 +273,7 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       const held = heldClipId === undefined ? null : await heldClipFor(heldClipId);
       const suggestion = containerSuggestion(tree, node, held);
       return {
-        kind: 'location',
+        kind: 'container',
         location: locationView(node),
         inside: leaves([node]).map(locationView),
         suggestion,

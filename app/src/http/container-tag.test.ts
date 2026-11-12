@@ -100,10 +100,10 @@ async function setup() {
   return { db, sql, get, appB, data, filament, clip, boxed, tagContainer };
 }
 
-type ContainerView = Extract<TagView, { inside: unknown }>;
+type ContainerView = Extract<TagView, { kind: 'container' }>;
 
 function asContainer(view: TagView | null): ContainerView {
-  if (view === null || !('inside' in view)) throw new Error('expected a container view');
+  if (view?.kind !== 'container') throw new Error('expected a container view');
   return view;
 }
 
@@ -133,14 +133,15 @@ describe('container tags (SPOOL-191)', () => {
     const res = await get(`/api/v1/tags/${ACTIVE_TAG.toLowerCase()}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as ContainerView;
-    expect(body.kind).toBe('location');
+    expect(body.kind).toBe('container');
     expect(body.inside).toHaveLength(ACTIVE_SHELVES.length);
     expect(body.held_clip_used).toBe(false);
     db.prepare(
       "UPDATE location SET tag_id = 'KEAFTAG00001' WHERE tenant_id = ? AND id = 'loc1.shelf-1'",
     ).run(TENANT_A);
-    const leaf = (await (await get('/api/v1/tags/KEAFTAG00001')).json()) as object;
+    const leaf = (await (await get('/api/v1/tags/KEAFTAG00001')).json()) as TagView;
     expect(Object.keys(leaf).sort()).toEqual(['kind', 'location']);
+    expect(leaf.kind).toBe('location');
   });
 
   it('suggests by the intake order: same filament, then manufacturer preference, then most free', async () => {
