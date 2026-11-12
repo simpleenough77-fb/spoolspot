@@ -3,7 +3,7 @@
 // every query binds that Principal's tenant: route handlers never receive a raw database handle, so an
 // unscoped query is not expressible from a handler. Each method also checks the scope it needs.
 import { ForbiddenError, hasScope, Scope, type Principal } from '../auth/principal.ts';
-import type { Sql } from '../db/sql.ts';
+import type { Sql, Statement } from '../db/sql.ts';
 import type { LocationType } from '../seed/validate.ts';
 import {
   buildTree,
@@ -14,7 +14,7 @@ import {
   type PlacementCheck,
   type PlacementSuggestion,
 } from './tree.ts';
-import { eventInsert, guardCondition } from './events.ts';
+import { eventInsert, guardCondition, InvalidEventError } from './events.ts';
 import { createStockOps, type StockOps } from './stock.ts';
 import { normalizeTagId } from './tags.ts';
 
@@ -73,7 +73,9 @@ export type MoveRefusal =
   | 'slot_not_supported'
   | 'needs_confirmation'
   /** The clip or the place changed between the check and the write; nothing was stored. Try again. */
-  | 'conflict';
+  | 'conflict'
+  /** An id the event log refuses (a clip id that is not a canonical UUID, SPOOL-197); nothing was stored. */
+  | 'invalid_request';
 
 export type MoveResult =
   | { ok: true; moved: boolean; clip: ClipSummary; check: PlacementCheck }
@@ -256,25 +258,34 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
         locationId: clip.location_id,
         hardLimit: { destinationId: destination.id, confirm },
       } as const;
-      const condition = guardCondition(principal, clip.id, guard);
-      await sql.batch([
-        // The guard holds only while the clip is still at clip.location_id, so `from` is that value.
-        eventInsert(
-          principal,
+      let statements: Statement[];
+      try {
+        const condition = guardCondition(principal, clip.id, guard);
+        statements = [
+          // The guard holds only while the clip is still at clip.location_id, so `from` is that value.
+          eventInsert(
+            principal,
+            {
+              type: 'move',
+              clipId: clip.id,
+              filamentId: null,
+              fromLocationId: clip.location_id,
+              toLocationId: destination.id,
+            },
+            guard,
+          ),
           {
-            type: 'move',
-            clipId: clip.id,
-            filamentId: null,
-            fromLocationId: clip.location_id,
-            toLocationId: destination.id,
+            query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${condition.sql}`,
+            params: [destination.id, tenantId, clip.id, ...condition.params],
           },
-          guard,
-        ),
-        {
-          query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${condition.sql}`,
-          params: [destination.id, tenantId, clip.id, ...condition.params],
-        },
-      ]);
+        ];
+      } catch (error) {
+        // The event log's id checks are stricter than the clip table's (SPOOL-197): report it as
+        // invalid input, like the route does for a malformed id, not as a server error.
+        if (error instanceof InvalidEventError) return { ok: false, refusal: 'invalid_request' };
+        throw error;
+      }
+      await sql.batch(statements);
       const after = await clipById(clip.id);
       if (after?.location_id !== destination.id) return { ok: false, refusal: 'conflict' };
       return { ok: true, moved: true, clip: after, check };

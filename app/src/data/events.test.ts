@@ -942,3 +942,24 @@ describe('moveClip behaves as on main (review round 1)', () => {
     ]);
   });
 });
+
+describe('a clip id the table accepts but the event log refuses (review round 1, SPOOL-197)', () => {
+  it('moveClip answers invalid_request, moves nothing and writes no event', async () => {
+    const s = await setup();
+    // 36 characters of [0-9a-f-]: the clip CHECK accepts it, the canonical UUID check does not.
+    const odd = '0123456789abcdef0123456789abcdef----';
+    s.db
+      .prepare(
+        "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, 'loc1.shelf-1', 'on_spool')",
+      )
+      .run(TENANT_A, odd, newTagId(), s.redA);
+    const result = await createScopedData(s.sql, principal(TENANT_A)).moveClip(
+      odd,
+      'loc1.shelf-2',
+      false,
+    );
+    expect(result).toEqual({ ok: false, refusal: 'invalid_request' });
+    expect(s.locationOf(odd)).toBe('loc1.shelf-1');
+    expect(s.events()).toHaveLength(0);
+  });
+});

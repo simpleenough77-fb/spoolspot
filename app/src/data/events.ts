@@ -71,7 +71,7 @@ const HARD_LIMIT_FIELDS = ['destinationId', 'confirm'] as const;
 // Same shapes as the JSON schema: lower-case canonical UUIDs, location slugs of at most 64 characters.
 // The UUID check is stricter than the clip, filament and event table CHECKs (36 characters of
 // [0-9a-f-], any arrangement), so a clip stored with a non-canonical id cannot have an event written
-// for it. Closing the gap needs a migration: SPOOL-197.
+// for it; moveClip reports that as invalid_request. Closing the gap needs a migration: SPOOL-197.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const LOCATION_ID = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
 const LOCATION_ID_MAX = 64;
