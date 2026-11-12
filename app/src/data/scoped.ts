@@ -171,14 +171,15 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     );
     return rows[0] ?? null;
   };
-  /** The intake-order preference for one clip of this tenant, or null when there is no such clip. */
-  const preferenceFor = async (clipId: string): Promise<PlacementPreference | null> => {
+  /** A held clip of this tenant with its intake-order preference, or null when there is no such clip. */
+  const heldClipFor = async (clipId: string): Promise<HeldClip | null> => {
     const clips = await sql.all<{
       filament_id: string;
       location_id: string | null;
+      state: ClipSummary['state'];
       manufacturer: string;
     }>(
-      `SELECT c.filament_id, c.location_id, f.manufacturer
+      `SELECT c.filament_id, c.location_id, c.state, f.manufacturer
          FROM clip c
          JOIN filament f ON f.tenant_id = c.tenant_id AND f.id = c.filament_id
         WHERE c.tenant_id = ? AND c.id = ?`,
@@ -202,10 +203,14 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       [tenantId, clip.manufacturer],
     );
     return {
-      sameFilamentAt: new Set(same.map((r) => r.location_id)),
-      manufacturerPreferredAt: new Set(preferred.map((r) => r.id)),
-      // Where the clip already is is not somewhere to move it.
-      exclude: new Set(clip.location_id === null ? [] : [clip.location_id]),
+      state: clip.state,
+      locationId: clip.location_id,
+      prefer: {
+        sameFilamentAt: new Set(same.map((r) => r.location_id)),
+        manufacturerPreferredAt: new Set(preferred.map((r) => r.id)),
+        // Where the clip already is is not somewhere to move it.
+        exclude: new Set(clip.location_id === null ? [] : [clip.location_id]),
+      },
     };
   };
   const requireWrite = (): void => {
@@ -262,17 +267,14 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       // A container tag lives only in the tag registry (SPOOL-191 decision 2) and resolves to the
       // leaves below it. The suggestion reuses suggestPlacements, so it follows the same rules as every
       // other suggestion; slots are left out even in a container that holds only slots (decision 3).
-      const prefer = heldClipId === undefined ? null : await preferenceFor(heldClipId);
-      const suggestion =
-        suggestPlacements(tree, 1, undefined, Number.MAX_SAFE_INTEGER, node, prefer ?? {}).find(
-          (s) => s.type !== 'active_use',
-        ) ?? null;
+      const held = heldClipId === undefined ? null : await heldClipFor(heldClipId);
+      const suggestion = containerSuggestion(tree, node, held);
       return {
         kind: 'location',
         location: locationView(node),
         inside: leaves([node]).map(locationView),
         suggestion,
-        held_clip_used: prefer !== null,
+        held_clip_used: held !== null,
       };
     },
     async clipsAt(locationId) {
@@ -382,6 +384,35 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       return { total: by_type.reduce((n, t) => n + t.locations, 0), by_type };
     },
   };
+}
+
+/** A clip the person is holding, as the container suggestion needs it. */
+interface HeldClip {
+  state: ClipSummary['state'];
+  locationId: string | null;
+  prefer: PlacementPreference;
+}
+
+/**
+ * The one leaf a container tag suggests for the held clip (or for nothing held), or null. Every rule
+ * that limits the candidates lives here, after the shared ranking in suggestPlacements.
+ */
+function containerSuggestion(
+  tree: readonly LocationNode[],
+  container: LocationNode,
+  held: HeldClip | null,
+): PlacementSuggestion | null {
+  // A clip in a slot can only leave it through the load workflow (a move out answers 422), so a
+  // suggestion would be advice the person cannot follow.
+  if (held?.locationId != null) {
+    const from = [...flatten(tree)].find((n) => n.id === held.locationId);
+    if (from?.type === 'active_use') return null;
+  }
+  return (
+    suggestPlacements(tree, 1, undefined, Number.MAX_SAFE_INTEGER, container, held?.prefer).find(
+      (s) => s.type !== 'active_use',
+    ) ?? null
+  );
 }
 
 function locationView(node: LocationNode): LocationView {
