@@ -382,6 +382,31 @@ const writer = (tenantId: string): Principal => ({
   scopes: new Set([Scope.LocationsRead, Scope.InventoryWrite]),
 });
 
+describe('claimed container tags and the container view (SPOOL-191)', () => {
+  it('a container tag claimed through the API resolves as the container view, in its own tenant only', async () => {
+    const { claim, request, asTenant } = await setup();
+    expect((await claim(TAG_1, { location_id: CONTAINER })).status).toBe(200);
+    const res = await request(`/api/v1/tags/${TAG_1}`, { headers: bearer });
+    expect(res.status).toBe(200);
+    const view = (await res.json()) as {
+      kind: string;
+      location: { id: string; leaf: boolean };
+      inside: { id: string }[];
+      suggestion: unknown;
+    };
+    expect(view.kind).toBe('container');
+    expect(view.location).toMatchObject({ id: CONTAINER, leaf: false });
+    expect(view.inside.map((l) => l.id)).toEqual([SHELF, OTHER_SHELF]);
+    expect(view).toHaveProperty('suggestion');
+    // Another tenant gets the same neutral 404 as for an ID nobody has claimed.
+    const b = asTenant(TENANT_B);
+    const other = await request(`/api/v1/tags/${TAG_1}`, { app: b });
+    const never = await request(`/api/v1/tags/${TAG_3}`, { app: b });
+    expect(other.status).toBe(404);
+    expect(await other.text()).toBe(await never.text());
+  });
+});
+
 describe('claimTag review round 1 (SPOOL-191)', () => {
   it("replacing a container's tag never touches another tenant's container with the same tag", async () => {
     const { claim, asTenant, registry } = await setup();

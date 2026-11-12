@@ -3,18 +3,21 @@
 // every query binds that Principal's tenant: route handlers never receive a raw database handle, so an
 // unscoped query is not expressible from a handler. Each method also checks the scope it needs.
 import { ForbiddenError, hasScope, Scope, type Principal } from '../auth/principal.ts';
-import type { Sql } from '../db/sql.ts';
+import type { Sql, Statement } from '../db/sql.ts';
 import type { LocationType } from '../seed/validate.ts';
 import {
   buildTree,
   checkPlacement,
+  leaves,
   suggestPlacements,
   type LocationNode,
   type LocationRow,
   type PlacementCheck,
+  type PlacementPreference,
   type PlacementSuggestion,
 } from './tree.ts';
 import { createClaimOps, type ClaimOps } from './claim.ts';
+import { eventInsert, guardCondition, InvalidEventError } from './events.ts';
 import { createStockOps, type StockOps } from './stock.ts';
 import { normalizeTagId } from './tags.ts';
 
@@ -49,21 +52,39 @@ export interface ClipSummary {
   filament: { manufacturer: string; type: string; color: string };
 }
 
+/** A location as a tag page shows it: room only, derived from what is stored. */
+export interface LocationView {
+  id: string;
+  name: string;
+  type: LocationType;
+  leaf: boolean;
+  capacity_mode: LocationNode['capacity_mode'];
+  capacity: number | null;
+  used: number;
+  free: number | null;
+}
+
 /** What a tag stands for, in the caller's tenant. */
 export type TagView =
   | { kind: 'clip'; clip: ClipSummary }
+  | { kind: 'location'; location: LocationView }
   | {
-      kind: 'location';
-      location: {
-        id: string;
-        name: string;
-        type: LocationType;
-        leaf: boolean;
-        capacity_mode: LocationNode['capacity_mode'];
-        capacity: number | null;
-        used: number;
-        free: number | null;
-      };
+      kind: 'container';
+      location: LocationView;
+      /** A container tag (SPOOL-191): every leaf below it, in tree order, with its room. */
+      inside: LocationView[];
+      /**
+       * The best leaf inside for the held clip. The clip's state limits the candidates (owner decision
+       * 2026-11-11): on_spool to active storage only, free and spool_empty to clip storage only. Among
+       * those, the intake order: same filament (other clips of it; boxed stock never counts), then a manufacturer preference (on
+       * clip storage only), then most free. With no clip held, most free first, any leaf but a slot.
+       * Never a full leaf, a leaf with no capacity, a slot or the clip's own place. Advisory only:
+       * nothing is moved. Null when nothing allowed inside has room, or when the held clip sits in a
+       * slot (a move out of a slot is refused).
+       */
+      suggestion: PlacementSuggestion | null;
+      /** Whether the held clip was found in this tenant and used for the ranking. */
+      held_clip_used: boolean;
     };
 
 export type MoveRefusal =
@@ -73,15 +94,21 @@ export type MoveRefusal =
   | 'slot_not_supported'
   | 'needs_confirmation'
   /** The clip or the place changed between the check and the write; nothing was stored. Try again. */
-  | 'conflict';
+  | 'conflict'
+  /** An id the event log refuses (a clip id that is not a canonical UUID, SPOOL-197); nothing was stored. */
+  | 'invalid_request';
 
 export type MoveResult =
   | { ok: true; moved: boolean; clip: ClipSummary; check: PlacementCheck }
   | { ok: false; refusal: MoveRefusal; check?: PlacementCheck };
 
 export interface ScopedData extends StockOps, ClaimOps {
-  /** The clip or location a tag stands for; null for a malformed, unknown or other tenant's tag. */
-  tagView(tagId: string): Promise<TagView | null>;
+  /**
+   * The clip or location a tag stands for; null for a malformed, unknown or other tenant's tag. For a
+   * container tag, `heldClipId` (the clip the person is holding) ranks the suggested leaf; an unknown
+   * or other tenant's clip is ignored, exactly as if none was held.
+   */
+  tagView(tagId: string, heldClipId?: string): Promise<TagView | null>;
   /** Clips stored at one place (at most 200), or null when the place does not exist. */
   clipsAt(locationId: string): Promise<ClipSummary[] | null>;
   /**
@@ -152,6 +179,47 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
     );
     return rows[0] ?? null;
   };
+  /** A held clip of this tenant with its intake-order preference, or null when there is no such clip. */
+  const heldClipFor = async (clipId: string): Promise<HeldClip | null> => {
+    const clips = await sql.all<{
+      filament_id: string;
+      location_id: string | null;
+      state: ClipSummary['state'];
+      manufacturer: string;
+    }>(
+      `SELECT c.filament_id, c.location_id, c.state, f.manufacturer
+         FROM clip c
+         JOIN filament f ON f.tenant_id = c.tenant_id AND f.id = c.filament_id
+        WHERE c.tenant_id = ? AND c.id = ?`,
+      [tenantId, clipId],
+    );
+    const clip = clips[0];
+    if (!clip) return null;
+    // "Same filament here" means other clips of the filament; boxed stock never counts (owner decision
+    // 2026-11-12: boxed stock does not belong on active storage). The held clip's own row is not
+    // filtered out: the only place it adds is the clip's own, which `exclude` below already keeps out.
+    const same = await sql.all<{ location_id: string }>(
+      `SELECT DISTINCT k.location_id FROM clip k
+        WHERE k.tenant_id = ? AND k.filament_id = ? AND k.location_id IS NOT NULL`,
+      [tenantId, clip.filament_id],
+    );
+    const preferred = await sql.all<{ id: string }>(
+      // A manufacturer preference applies to clip storage only (owner decision 2026-11-11).
+      `SELECT id FROM location
+        WHERE tenant_id = ? AND leaf = 1 AND type = 'clip_storage' AND prefers_manufacturer = ?`,
+      [tenantId, clip.manufacturer],
+    );
+    return {
+      state: clip.state,
+      locationId: clip.location_id,
+      prefer: {
+        sameFilamentAt: new Set(same.map((r) => r.location_id)),
+        manufacturerPreferredAt: new Set(preferred.map((r) => r.id)),
+        // Where the clip already is is not somewhere to move it.
+        exclude: new Set(clip.location_id === null ? [] : [clip.location_id]),
+      },
+    };
+  };
   const requireWrite = (): void => {
     if (!hasScope(principal, Scope.InventoryWrite)) throw new ForbiddenError(Scope.InventoryWrite);
   };
@@ -193,7 +261,7 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
   return {
     ...stock,
     ...claims,
-    async tagView(tagId) {
+    async tagView(tagId, heldClipId) {
       require(Scope.LocationsRead);
       const target = await resolve(tagId);
       if (target === null) return null;
@@ -201,20 +269,23 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
         const clip = await clipById(target.target_id);
         return clip ? { kind: 'clip', clip } : null;
       }
-      const node = [...flatten(await loadTree())].find((n) => n.id === target.target_id);
+      const tree = await loadTree();
+      const node = [...flatten(tree)].find((n) => n.id === target.target_id);
       if (!node) return null;
+      if (node.leaf) return { kind: 'location', location: locationView(node) };
+      // A container tag lives only in the tag registry (SPOOL-191 decision 2) and resolves to the
+      // leaves below it. The suggestion ranks with suggestPlacements (same filament by other clips, then manufacturer
+      // preference on clip storage only, then most free); containerSuggestion then limits it by the held
+      // clip's state, never offers a slot (even in a container of slots only), and offers nothing for
+      // a clip sitting in a slot.
+      const held = heldClipId === undefined ? null : await heldClipFor(heldClipId);
+      const suggestion = containerSuggestion(tree, node, held);
       return {
-        kind: 'location',
-        location: {
-          id: node.id,
-          name: node.name,
-          type: node.type,
-          leaf: node.leaf,
-          capacity_mode: node.capacity_mode,
-          capacity: node.capacity,
-          used: node.used,
-          free: node.free,
-        },
+        kind: 'container',
+        location: locationView(node),
+        inside: leaves([node]).map(locationView),
+        suggestion,
+        held_clip_used: held !== null,
       };
     },
     async clipsAt(locationId) {
@@ -249,32 +320,43 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       if (check.outcome === 'warning' && !confirm) {
         return { ok: false, refusal: 'needs_confirmation', check };
       }
-      // One atomic batch. Both statements carry the same guard, evaluated inside the write: the clip must
-      // still be where we read it, and a hard limit must still have room unless the person confirmed.
-      // If another request got there first the guard fails, nothing is stored, and we report a conflict.
-      const guard = (clipTable: string): string =>
-        `${clipTable}.location_id IS ?
-         AND (? = 1 OR NOT EXISTS (
-           SELECT 1 FROM location d
-            WHERE d.tenant_id = ${clipTable}.tenant_id AND d.id = ?
-              AND d.capacity_mode = 'hard' AND d.capacity IS NOT NULL
-              AND COALESCE((SELECT SUM(s.count) FROM stock_line s
-                             WHERE s.tenant_id = d.tenant_id AND s.location_id = d.id), 0)
-                  + (SELECT COUNT(*) FROM clip k
-                      WHERE k.tenant_id = d.tenant_id AND k.location_id = d.id) >= d.capacity))`;
-      const guardParams = [clip.location_id, confirm ? 1 : 0, destination.id];
-      await sql.batch([
-        {
-          query: `INSERT INTO event (tenant_id, id, type, clip_id, filament_id, from_location_id, to_location_id)
-                  SELECT c.tenant_id, ?, 'move', c.id, c.filament_id, c.location_id, ?
-                    FROM clip c WHERE c.tenant_id = ? AND c.id = ? AND ${guard('c')}`,
-          params: [crypto.randomUUID(), destination.id, tenantId, clip.id, ...guardParams],
-        },
-        {
-          query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${guard('clip')}`,
-          params: [destination.id, tenantId, clip.id, ...guardParams],
-        },
-      ]);
+      // One atomic batch. Both statements carry the same guard, rendered once by events.ts and
+      // evaluated inside the write: the clip must still be where we read it, and a hard limit must still
+      // have room unless the person confirmed. If another request got there first the guard fails,
+      // nothing is stored, and we report a conflict.
+      const guard = {
+        kind: 'clipStillAt',
+        locationId: clip.location_id,
+        hardLimit: { destinationId: destination.id, confirm },
+      } as const;
+      let statements: Statement[];
+      try {
+        const condition = guardCondition(principal, clip.id, guard);
+        statements = [
+          // The guard holds only while the clip is still at clip.location_id, so `from` is that value.
+          eventInsert(
+            principal,
+            {
+              type: 'move',
+              clipId: clip.id,
+              filamentId: null,
+              fromLocationId: clip.location_id,
+              toLocationId: destination.id,
+            },
+            guard,
+          ),
+          {
+            query: `UPDATE clip SET location_id = ? WHERE tenant_id = ? AND id = ? AND ${condition.sql}`,
+            params: [destination.id, tenantId, clip.id, ...condition.params],
+          },
+        ];
+      } catch (error) {
+        // The event log's id checks are stricter than the clip table's (SPOOL-197): report it as
+        // invalid input, like the route does for a malformed id, not as a server error.
+        if (error instanceof InvalidEventError) return { ok: false, refusal: 'invalid_request' };
+        throw error;
+      }
+      await sql.batch(statements);
       const after = await clipById(clip.id);
       if (after?.location_id !== destination.id) return { ok: false, refusal: 'conflict' };
       return { ok: true, moved: true, clip: after, check };
@@ -323,6 +405,62 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       });
       return { total: by_type.reduce((n, t) => n + t.locations, 0), by_type };
     },
+  };
+}
+
+/** A clip the person is holding, as the container suggestion needs it. */
+interface HeldClip {
+  state: ClipSummary['state'];
+  locationId: string | null;
+  prefer: PlacementPreference;
+}
+
+/**
+ * Which leaves may be suggested for a held clip, by its state (owner decision 2026-11-11, SPOOL-191):
+ * a clip on a spool goes to active storage; a free clip, or one whose spool is empty, goes to clip
+ * storage. Slots are never suggested (the load workflow fills them).
+ */
+const CANDIDATE_TYPES: Readonly<Record<ClipSummary['state'], readonly LocationType[]>> = {
+  on_spool: ['active_storage'],
+  free: ['clip_storage'],
+  spool_empty: ['clip_storage'],
+};
+
+/**
+ * The one leaf a container tag suggests for the held clip (or for nothing held), or null. Every rule
+ * that limits the candidates lives here, after the shared ranking in suggestPlacements.
+ */
+function containerSuggestion(
+  tree: readonly LocationNode[],
+  container: LocationNode,
+  held: HeldClip | null,
+): PlacementSuggestion | null {
+  // A clip in a slot can only leave it through the load workflow (a move out answers 422), so a
+  // suggestion would be advice the person cannot follow.
+  if (held?.locationId != null) {
+    const from = [...flatten(tree)].find((n) => n.id === held.locationId);
+    if (from?.type === 'active_use') return null;
+  }
+  // With nothing held, any leaf but a slot (most free first, unchanged).
+  const allowed = (type: LocationType): boolean =>
+    held === null ? type !== 'active_use' : CANDIDATE_TYPES[held.state].includes(type);
+  return (
+    suggestPlacements(tree, 1, undefined, Number.MAX_SAFE_INTEGER, container, held?.prefer).find(
+      (s) => allowed(s.type),
+    ) ?? null
+  );
+}
+
+function locationView(node: LocationNode): LocationView {
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    leaf: node.leaf,
+    capacity_mode: node.capacity_mode,
+    capacity: node.capacity,
+    used: node.used,
+    free: node.free,
   };
 }
 
