@@ -16,7 +16,16 @@ import {
   TENANT_B,
   uuid,
 } from '../testing.ts';
-import { EVENT_TYPES, eventInsert, InvalidEventError } from './events.ts';
+import * as eventsModule from './events.ts';
+import {
+  checkBindings,
+  EVENT_TYPES,
+  eventInsert,
+  guardCondition,
+  InvalidEventError,
+  type EventGuard,
+  type NewEvent,
+} from './events.ts';
 import { newTagId } from './tags.ts';
 import { createScopedData } from './scoped.ts';
 
@@ -72,7 +81,13 @@ async function setup() {
         location_id: string | null;
       }
     ).location_id;
-  return { sql, db, redA, clipA, blueB, clipB, events, locationOf };
+  /** Boxed stock that takes `count` places at a location of one tenant. */
+  const fill = (tenant: string, location: string, count: number): void => {
+    db.prepare(
+      "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, ?, 'spool', ?)",
+    ).run(tenant, uuid(), filament(tenant, `Fill ${uuid()}`), location, count);
+  };
+  return { sql, db, redA, clipA, blueB, clipB, events, locationOf, filament, clip, fill };
 }
 
 /** Records every batch the data layer sends, then runs it for real. */
@@ -89,6 +104,19 @@ function recording(sql: Sql) {
 }
 
 const isEventInsert = (s: Statement): boolean => /^\s*INSERT INTO event\b/.test(s.query);
+
+const moveOf = (clipId: string, from: string | null, to: string): NewEvent => ({
+  type: 'move',
+  clipId,
+  filamentId: null,
+  fromLocationId: from,
+  toLocationId: to,
+});
+const stillAt = (from: string | null, to: string, confirm = false): EventGuard => ({
+  kind: 'clipStillAt',
+  locationId: from,
+  hardLimit: { destinationId: to, confirm },
+});
 
 describe('eventInsert', () => {
   it('knows exactly the event types of the schema CHECK and schema/event.schema.json', () => {
@@ -218,20 +246,11 @@ describe('eventInsert', () => {
   it('writes nothing when its guard does not hold', async () => {
     const s = await setup();
     const changed = await s.sql.batch([
-      eventInsert(
-        principal(TENANT_A),
-        {
-          type: 'move',
-          clipId: s.clipA,
-          filamentId: null,
-          fromLocationId: 'loc1.shelf-1',
-          toLocationId: 'loc1.shelf-2',
-        },
-        {
-          where: 'EXISTS (SELECT 1 FROM clip WHERE tenant_id = ? AND id = ? AND location_id IS ?)',
-          params: [TENANT_A, s.clipA, 'loc9.nowhere'],
-        },
-      ),
+      eventInsert(principal(TENANT_A), moveOf(s.clipA, 'loc9.nowhere', 'loc1.shelf-2'), {
+        kind: 'clipStillAt',
+        locationId: 'loc9.nowhere',
+        hardLimit: { destinationId: 'loc1.shelf-2', confirm: false },
+      }),
     ]);
     expect(changed).toEqual([0]);
     expect(s.events()).toHaveLength(0);
@@ -375,5 +394,469 @@ describe('the event log across tenants', () => {
       .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
       .filter((f) => /\b(FROM|JOIN)\s+event\b/i.test(readFileSync(join(dir, f), 'utf8')));
     expect(readers).toEqual([]);
+  });
+});
+
+describe('the event guard is a closed set rendered by the helper (review round 1)', () => {
+  it("the reviewer's UNION payload cannot be expressed, at compile time or at run time", async () => {
+    const s = await setup();
+    const payload = {
+      where: "0 UNION ALL SELECT ?, ?, 'retire', NULL, NULL, NULL, NULL",
+      params: [TENANT_B, uuid()],
+    };
+    const intake: NewEvent = {
+      type: 'intake',
+      clipId: null,
+      filamentId: null,
+      fromLocationId: null,
+      toLocationId: null,
+    };
+    expect(() =>
+      // @ts-expect-error a free-form SQL guard is not an EventGuard
+      eventInsert(principal(TENANT_A), intake, payload),
+    ).toThrow(InvalidEventError);
+    // Smuggled past the types: a `where` next to a valid guard, or a guard of another kind.
+    const smuggled = { ...stillAt('loc1.shelf-1', 'loc1.shelf-2'), ...payload } as unknown;
+    expect(() =>
+      eventInsert(
+        principal(TENANT_A),
+        moveOf(s.clipA, 'loc1.shelf-1', 'loc1.shelf-2'),
+        smuggled as EventGuard,
+      ),
+    ).toThrow(InvalidEventError);
+    expect(() => guardCondition(principal(TENANT_A), s.clipA, smuggled as EventGuard)).toThrow(
+      InvalidEventError,
+    );
+    for (const bad of [
+      { ...payload, kind: 'clipStillAt' },
+      {
+        kind: 'sql',
+        locationId: null,
+        hardLimit: { destinationId: 'loc1.shelf-2', confirm: false },
+      },
+      {
+        kind: 'clipStillAt',
+        locationId: null,
+        hardLimit: { destinationId: 'loc1.shelf-2', confirm: 1 },
+      },
+      {
+        kind: 'clipStillAt',
+        locationId: "x' OR 1=1 --",
+        hardLimit: { destinationId: 'loc1.shelf-2', confirm: false },
+      },
+      {
+        kind: 'clipStillAt',
+        locationId: null,
+        hardLimit: { destinationId: 'loc1.shelf-2', confirm: false, where: '1' },
+      },
+      { kind: 'clipStillAt', locationId: null },
+      null,
+      'EXISTS (SELECT 1)',
+    ]) {
+      expect(() =>
+        eventInsert(
+          principal(TENANT_A),
+          moveOf(s.clipA, null, 'loc1.shelf-2'),
+          bad as unknown as EventGuard,
+        ),
+      ).toThrow(InvalidEventError);
+    }
+    expect(s.events()).toHaveLength(0);
+  });
+
+  it('exports no way to pass SQL text in: the module surface is exactly this', () => {
+    expect(Object.keys(eventsModule).sort()).toEqual(
+      ['EVENT_TYPES', 'InvalidEventError', 'checkBindings', 'eventInsert', 'guardCondition'].sort(),
+    );
+  });
+
+  it('a guard must say what the event says: clip present, from and to equal', async () => {
+    const s = await setup();
+    const p = principal(TENANT_A);
+    const intake: NewEvent = {
+      type: 'intake',
+      clipId: null,
+      filamentId: s.redA,
+      fromLocationId: null,
+      toLocationId: 'loc1.shelf-2',
+    };
+    expect(() => eventInsert(p, intake, stillAt(null, 'loc1.shelf-2'))).toThrow(InvalidEventError);
+    const move = moveOf(s.clipA, 'loc1.shelf-1', 'loc1.shelf-2');
+    expect(() => eventInsert(p, move, stillAt('loc1.shelf-3', 'loc1.shelf-2'))).toThrow(
+      InvalidEventError,
+    );
+    expect(() => eventInsert(p, move, stillAt('loc1.shelf-1', 'loc1.shelf-3'))).toThrow(
+      InvalidEventError,
+    );
+    expect(() => eventInsert(p, move, stillAt('loc1.shelf-1', 'loc1.shelf-2'))).not.toThrow();
+  });
+
+  it("a guard cannot reference another tenant's clip or places", async () => {
+    const s = await setup();
+    const a = principal(TENANT_A);
+    // Tenant B's clip id under principal A: the guard looks only in A, finds nothing, stores nothing.
+    expect(
+      await s.sql.batch([
+        eventInsert(
+          a,
+          moveOf(s.clipB, 'loc1.shelf-1', 'loc1.shelf-2'),
+          stillAt('loc1.shelf-1', 'loc1.shelf-2'),
+        ),
+      ]),
+    ).toEqual([0]);
+    expect(s.events()).toHaveLength(0);
+    // The hard limit is A's own: B's full shelf does not stop A, A's full shelf does.
+    s.fill(TENANT_B, 'loc1.shelf-2', 16);
+    expect(
+      await s.sql.batch([
+        eventInsert(
+          a,
+          moveOf(s.clipA, 'loc1.shelf-1', 'loc1.shelf-2'),
+          stillAt('loc1.shelf-1', 'loc1.shelf-2'),
+        ),
+      ]),
+    ).toEqual([1]);
+    s.fill(TENANT_A, 'loc2.shelf-1', 10);
+    expect(
+      await s.sql.batch([
+        eventInsert(
+          a,
+          moveOf(s.clipA, 'loc1.shelf-1', 'loc2.shelf-1'),
+          stillAt('loc1.shelf-1', 'loc2.shelf-1'),
+        ),
+      ]),
+    ).toEqual([0]);
+    expect(s.events(TENANT_B)).toHaveLength(0);
+    expect(s.events(TENANT_A)).toHaveLength(1);
+  });
+
+  it('every placeholder has exactly one bound value, and only plain ? placeholders are used', () => {
+    expect(() => {
+      checkBindings({ query: 'SELECT ?, ?', params: [1, 2] });
+    }).not.toThrow();
+    expect(() => {
+      checkBindings({ query: 'SELECT 1' });
+    }).not.toThrow();
+    expect(() => {
+      checkBindings({ query: 'SELECT ?, ?', params: [1] });
+    }).toThrow(/placeholders/);
+    expect(() => {
+      checkBindings({ query: 'SELECT ?', params: [1, 2] });
+    }).toThrow(/placeholders/);
+    expect(() => {
+      checkBindings({ query: 'SELECT ?1, ?', params: [1, 2] });
+    }).toThrow(/numbered/);
+    expect(() => {
+      checkBindings({ query: 'SELECT :t, ?', params: [1, 2] });
+    }).toThrow(/named/);
+    expect(() => {
+      checkBindings({ query: 'SELECT @t', params: [1] });
+    }).toThrow(/named/);
+    expect(() => {
+      checkBindings({ query: 'SELECT $t', params: [1] });
+    }).toThrow(/named/);
+  });
+
+  it('renders exactly these query texts, with every value bound and none in the text', async () => {
+    const s = await setup();
+    const p = principal(TENANT_A);
+    const head =
+      'INSERT INTO event (tenant_id, id, type, clip_id, filament_id, from_location_id, to_location_id)';
+    const guardSql =
+      'EXISTS (SELECT 1 FROM clip g WHERE g.tenant_id = ? AND g.id = ? AND g.location_id IS ?' +
+      ' AND (? = 1 OR NOT EXISTS (SELECT 1 FROM location d' +
+      ' WHERE d.tenant_id = g.tenant_id AND d.id = ?' +
+      " AND d.capacity_mode = 'hard' AND d.capacity IS NOT NULL" +
+      ' AND COALESCE((SELECT SUM(s.count) FROM stock_line s' +
+      ' WHERE s.tenant_id = d.tenant_id AND s.location_id = d.id), 0)' +
+      ' + (SELECT COUNT(*) FROM clip k WHERE k.tenant_id = d.tenant_id AND k.location_id = d.id)' +
+      ' >= d.capacity)))';
+    const clipFilament = '(SELECT k.filament_id FROM clip k WHERE k.tenant_id = ? AND k.id = ?)';
+    const noValueInText = (st: { query: string; params?: readonly unknown[] }): void => {
+      for (const v of st.params ?? []) {
+        if (typeof v === 'string' && v !== '') expect(st.query).not.toContain(v);
+      }
+    };
+
+    const byFilament = eventInsert(p, {
+      type: 'intake',
+      clipId: null,
+      filamentId: s.redA,
+      fromLocationId: null,
+      toLocationId: 'closet-storage.shelf-1',
+    });
+    expect(byFilament.query).toBe(`${head} SELECT ?, ?, ?, ?, ?, ?, ?`);
+    expect(byFilament.params).toEqual([
+      TENANT_A,
+      expect.any(String),
+      'intake',
+      null,
+      s.redA,
+      null,
+      'closet-storage.shelf-1',
+    ]);
+    noValueInText(byFilament);
+
+    const byClip = eventInsert(p, moveOf(s.clipA, 'loc1.shelf-1', 'loc1.shelf-2'));
+    expect(byClip.query).toBe(`${head} SELECT ?, ?, ?, ?, ${clipFilament}, ?, ?`);
+    expect(byClip.params).toEqual([
+      TENANT_A,
+      expect.any(String),
+      'move',
+      s.clipA,
+      TENANT_A,
+      s.clipA,
+      'loc1.shelf-1',
+      'loc1.shelf-2',
+    ]);
+    noValueInText(byClip);
+
+    for (const confirm of [false, true]) {
+      const guarded = eventInsert(
+        p,
+        moveOf(s.clipA, null, 'loc1.shelf-2'),
+        stillAt(null, 'loc1.shelf-2', confirm),
+      );
+      expect(guarded.query).toBe(
+        `${head} SELECT ?, ?, ?, ?, ${clipFilament}, ?, ? WHERE ${guardSql}`,
+      );
+      expect(guarded.params).toEqual([
+        TENANT_A,
+        expect.any(String),
+        'move',
+        s.clipA,
+        TENANT_A,
+        s.clipA,
+        null,
+        'loc1.shelf-2',
+        TENANT_A,
+        s.clipA,
+        null,
+        confirm ? 1 : 0,
+        'loc1.shelf-2',
+      ]);
+      noValueInText(guarded);
+      const condition = guardCondition(p, s.clipA, stillAt(null, 'loc1.shelf-2', confirm));
+      expect(condition.sql).toBe(guardSql);
+      expect(condition.params).toEqual([TENANT_A, s.clipA, null, confirm ? 1 : 0, 'loc1.shelf-2']);
+      noValueInText({ query: condition.sql, params: condition.params });
+    }
+  });
+
+  it("derives the filament from the caller's own clip when two tenants share a clip id", async () => {
+    const s = await setup();
+    // Same clip id in both tenants with different filaments; B's row is stored first.
+    const shared = uuid();
+    s.db
+      .prepare(
+        "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, 'loc1.shelf-1', 'on_spool')",
+      )
+      .run(TENANT_B, shared, newTagId(), s.blueB);
+    s.db
+      .prepare(
+        "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, 'loc1.shelf-1', 'on_spool')",
+      )
+      .run(TENANT_A, shared, newTagId(), s.redA);
+    await s.sql.batch([
+      eventInsert(principal(TENANT_A), moveOf(shared, 'loc1.shelf-1', 'loc1.shelf-2')),
+    ]);
+    expect(s.events()).toEqual([
+      expect.objectContaining({ tenant_id: TENANT_A, clip_id: shared, filament_id: s.redA }),
+    ]);
+  });
+
+  it("moveClip's guard ignores another tenant's clip with the same id at the from location", async () => {
+    const s = await setup();
+    const shared = uuid();
+    for (const [tenant, filament] of [
+      [TENANT_A, s.redA],
+      [TENANT_B, s.blueB],
+    ] as const) {
+      s.db
+        .prepare(
+          "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, 'loc1.shelf-1', 'on_spool')",
+        )
+        .run(tenant, shared, newTagId(), filament);
+    }
+    // A's clip is moved away between the read and the write; B's clip of the same id stays put.
+    const racing: Sql = {
+      all: (query, params) => s.sql.all(query, params),
+      batch: (statements) => {
+        s.db
+          .prepare(
+            "UPDATE clip SET location_id = 'closet-storage.shelf-1' WHERE tenant_id = ? AND id = ?",
+          )
+          .run(TENANT_A, shared);
+        return s.sql.batch(statements);
+      },
+    };
+    const result = await createScopedData(racing, principal(TENANT_A)).moveClip(
+      shared,
+      'loc1.shelf-2',
+      false,
+    );
+    expect(result).toEqual({ ok: false, refusal: 'conflict' });
+    expect(s.events()).toHaveLength(0);
+    const where = s.db
+      .prepare('SELECT tenant_id, location_id FROM clip WHERE id = ? ORDER BY tenant_id')
+      .all(shared);
+    expect(where).toEqual([
+      { tenant_id: TENANT_A, location_id: 'closet-storage.shelf-1' },
+      { tenant_id: TENANT_B, location_id: 'loc1.shelf-1' },
+    ]);
+  });
+});
+
+describe('event shape (review round 1)', () => {
+  const p = principal(TENANT_A);
+  const empty: NewEvent = {
+    type: 'intake',
+    clipId: null,
+    filamentId: null,
+    fromLocationId: null,
+    toLocationId: null,
+  };
+
+  it('a location id may be 64 characters, not 65', () => {
+    const at64 = 'a'.repeat(64);
+    expect(() => eventInsert(p, { ...empty, toLocationId: at64 })).not.toThrow();
+    expect(() => eventInsert(p, { ...empty, fromLocationId: at64 })).not.toThrow();
+    expect(() => eventInsert(p, { ...empty, toLocationId: `${at64}a` })).toThrow(InvalidEventError);
+    expect(() => eventInsert(p, { ...empty, fromLocationId: `${at64}a` })).toThrow(
+      InvalidEventError,
+    );
+  });
+
+  it('a move needs its clip and its destination; where it came from may be unset', () => {
+    const clip = uuid();
+    expect(() => eventInsert(p, { ...empty, type: 'move' })).toThrow(InvalidEventError);
+    expect(() => eventInsert(p, { ...empty, type: 'move', toLocationId: 'loc1.shelf-2' })).toThrow(
+      /needs clipId/,
+    );
+    expect(() =>
+      eventInsert(p, { ...empty, type: 'move', clipId: clip, fromLocationId: 'loc1.shelf-1' }),
+    ).toThrow(/needs toLocationId/);
+    expect(() => eventInsert(p, moveOf(clip, null, 'loc1.shelf-2'))).not.toThrow();
+  });
+
+  it('every field must be present, as an own field', () => {
+    const missing: Partial<NewEvent> = { ...empty };
+    delete missing.toLocationId;
+    expect(() => eventInsert(p, missing as NewEvent)).toThrow(InvalidEventError);
+    const inherited = Object.create(empty) as NewEvent;
+    expect(() => eventInsert(p, inherited)).toThrow(InvalidEventError);
+    const symbolKey: NewEvent = { ...empty, [Symbol('x')]: 1 };
+    expect(() => eventInsert(p, symbolKey)).toThrow(InvalidEventError);
+  });
+
+  it('reads each field once: a getter cannot pass validation with one value and bind another', () => {
+    const clip = uuid();
+    let reads = 0;
+    const tricky = {
+      type: 'move',
+      get clipId() {
+        reads += 1;
+        return reads === 1 ? clip : "x'); DELETE FROM clip; --";
+      },
+      filamentId: null,
+      fromLocationId: null,
+      toLocationId: 'loc1.shelf-2',
+    } as unknown as NewEvent;
+    const statement = eventInsert(p, tricky);
+    expect(reads).toBe(1);
+    expect(statement.params).toContain(clip);
+    expect(statement.params).not.toContain("x'); DELETE FROM clip; --");
+
+    let guardReads = 0;
+    const trickyGuard = {
+      kind: 'clipStillAt',
+      get locationId() {
+        guardReads += 1;
+        return guardReads === 1 ? null : 'loc1.shelf-9';
+      },
+      hardLimit: { destinationId: 'loc1.shelf-2', confirm: false },
+    } as unknown as EventGuard;
+    const guarded = eventInsert(p, moveOf(clip, null, 'loc1.shelf-2'), trickyGuard);
+    expect(guardReads).toBe(1);
+    expect(guarded.params).not.toContain('loc1.shelf-9');
+  });
+
+  it('a missing or non-object event is an InvalidEventError, not a TypeError', () => {
+    for (const bad of [null, undefined, 'move', 7, [], [empty]]) {
+      expect(() => eventInsert(p, bad as unknown as NewEvent)).toThrow(InvalidEventError);
+    }
+  });
+});
+
+describe('moveClip behaves as on main (review round 1)', () => {
+  it('a plain move stores the clip and one event', async () => {
+    const s = await setup();
+    const result = await createScopedData(s.sql, principal(TENANT_A)).moveClip(
+      s.clipA,
+      'loc1.shelf-2',
+      false,
+    );
+    expect(result).toMatchObject({ ok: true, moved: true });
+    expect(s.locationOf(s.clipA)).toBe('loc1.shelf-2');
+    expect(s.events()).toHaveLength(1);
+  });
+
+  it('past a hard limit: refused without confirm, stored with it', async () => {
+    const s = await setup();
+    s.fill(TENANT_A, 'loc1.shelf-2', 16);
+    const data = createScopedData(s.sql, principal(TENANT_A));
+    expect(await data.moveClip(s.clipA, 'loc1.shelf-2', false)).toMatchObject({
+      ok: false,
+      refusal: 'needs_confirmation',
+    });
+    expect(s.events()).toHaveLength(0);
+    expect(await data.moveClip(s.clipA, 'loc1.shelf-2', true)).toMatchObject({
+      ok: true,
+      moved: true,
+    });
+    expect(s.locationOf(s.clipA)).toBe('loc1.shelf-2');
+    expect(s.events()).toEqual([
+      expect.objectContaining({ from_location_id: 'loc1.shelf-1', to_location_id: 'loc1.shelf-2' }),
+    ]);
+  });
+
+  it('a hard limit filled between the check and the write is a conflict', async () => {
+    const s = await setup();
+    s.fill(TENANT_A, 'loc1.shelf-2', 15);
+    const racing: Sql = {
+      all: (query, params) => s.sql.all(query, params),
+      batch: (statements) => {
+        s.fill(TENANT_A, 'loc1.shelf-2', 1);
+        return s.sql.batch(statements);
+      },
+    };
+    const result = await createScopedData(racing, principal(TENANT_A)).moveClip(
+      s.clipA,
+      'loc1.shelf-2',
+      false,
+    );
+    expect(result).toEqual({ ok: false, refusal: 'conflict' });
+    expect(s.locationOf(s.clipA)).toBe('loc1.shelf-1');
+    expect(s.events()).toHaveLength(0);
+  });
+
+  it('a clip that was not placed anywhere moves, and its event has no from', async () => {
+    const s = await setup();
+    const loose = s.clip(TENANT_A, s.redA, null);
+    const result = await createScopedData(s.sql, principal(TENANT_A)).moveClip(
+      loose,
+      'loc1.shelf-2',
+      false,
+    );
+    expect(result).toMatchObject({ ok: true, moved: true });
+    expect(s.locationOf(loose)).toBe('loc1.shelf-2');
+    expect(s.events()).toEqual([
+      expect.objectContaining({
+        clip_id: loose,
+        filament_id: s.redA,
+        from_location_id: null,
+        to_location_id: 'loc1.shelf-2',
+      }),
+    ]);
   });
 });
