@@ -227,6 +227,27 @@ describe('container tags (SPOOL-191)', () => {
     expect(moved).toMatchObject({ ok: true, moved: true });
   });
 
+  it('suggests nothing for a held clip that sits in a slot (a move out of a slot is refused)', async () => {
+    const { data, filament, clip } = await setup();
+    const f = filament(TENANT_A, 'Acme');
+    const loaded = clip(TENANT_A, f, 'dreammaker.ams-a.slot-1');
+    const scoped = data(TENANT_A);
+    const view = asContainer(await scoped.tagView(ACTIVE_TAG, loaded));
+    expect(view.held_clip_used).toBe(true);
+    expect(view.suggestion).toBeNull();
+    expect(view.inside.map((l) => l.id)).toEqual(ACTIVE_SHELVES);
+    // The advice would be unfollowable: the move API refuses a move out of a slot.
+    expect(await scoped.moveClip(loaded, 'loc1.shelf-2', false)).toMatchObject({
+      ok: false,
+      refusal: 'slot_not_supported',
+    });
+    // Nothing held, the same container still suggests by most free.
+    expect(asContainer(await scoped.tagView(ACTIVE_TAG)).suggestion).toMatchObject({
+      location_id: 'loc1.shelf-1',
+      reason: 'most_free',
+    });
+  });
+
   it('gives the same 404 for an unknown, a malformed and another tenant’s container tag', async () => {
     const { get, appB, tagContainer } = await setup();
     // A tag registered only in tenant B (and A's tag asked for in B) is unknown to the asker.
