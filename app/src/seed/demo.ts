@@ -63,7 +63,7 @@ function demoFilament(db: DatabaseSync, tenantId: string): string | undefined {
 
 /**
  * Refuses unless everything the removal would delete is demo data: every clip of the demo filament
- * carries a demo clip tag, and every event about the demo filament or its clips names a demo clip and
+ * carries a demo clip tag, its only boxed stock is the demo line, and every event about the demo filament or its clips names a demo clip and
  * the demo filament (or no filament). An event with no clip, a real clip or another filament is the
  * person's history, so the whole removal stops instead.
  */
@@ -74,6 +74,17 @@ function assertOnlyDemo(db: DatabaseSync, tenantId: string, filament: string): v
     )
     .get(tenantId, filament, DEMO_CLIP_TAG_GLOB);
   if (realClip !== undefined) throw new DemoRemovalRefused('a clip of this filament is not a demo clip');
+  // fillDemo creates one boxed line: spools on the soft demo shelf. Its count may have been tapped
+  // during a demo; any other line of the demo filament was added by the person, so stop.
+  const otherStock = db
+    .prepare(
+      `SELECT 1 AS n FROM stock_line
+        WHERE tenant_id = ? AND filament_id = ? AND NOT (location_id = ? AND pack = 'spool') LIMIT 1`,
+    )
+    .get(tenantId, filament, SOFT_DEMO_LOCATION);
+  if (otherStock !== undefined) {
+    throw new DemoRemovalRefused('boxed stock of this filament is not the demo line');
+  }
   const demoClips = `SELECT k.id FROM clip k
                       WHERE k.tenant_id = ? AND k.filament_id = ? AND k.tag_id GLOB ?`;
   const notDemo = db
@@ -175,16 +186,21 @@ export function fillDemo(db: DatabaseSync, tenantId: string): DemoResult {
  * limited to the demo filament (SPOOL-194). Every other event stays: the database refuses the rest.
  */
 export function removeDemo(db: DatabaseSync, tenantId: string): number {
-  const filament = demoFilament(db, tenantId);
-  if (filament === undefined) return 0;
-  const setCapacity =
-    (
-      db.prepare('SELECT color FROM filament WHERE tenant_id = ? AND id = ?').get(tenantId, filament) as
-        | { color: string }
-        | undefined
-    )?.color === COLOR_CAPACITY_SET;
+  // Everything is read inside the write transaction, so nothing can change between the checks and
+  // the deletes.
   db.exec('BEGIN IMMEDIATE');
   try {
+    const filament = demoFilament(db, tenantId);
+    if (filament === undefined) {
+      db.exec('COMMIT');
+      return 0;
+    }
+    const setCapacity =
+      (
+        db
+          .prepare('SELECT color FROM filament WHERE tenant_id = ? AND id = ?')
+          .get(tenantId, filament) as { color: string } | undefined
+      )?.color === COLOR_CAPACITY_SET;
     assertOnlyDemo(db, tenantId, filament);
     // Events first (they reference the demo clips and filament), and the grant is closed before the
     // filament it names is deleted.

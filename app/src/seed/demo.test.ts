@@ -200,6 +200,30 @@ describe('demo data', () => {
       expect(db.prepare('SELECT clip_id FROM event').all()).toEqual([{ clip_id: user.clip }]);
     });
 
+    it('refuses, changing nothing, when boxed stock was added to the demo filament elsewhere', async () => {
+      const { db } = await setup();
+      fillDemo(db, TENANT_A);
+      const demo = (
+        db.prepare('SELECT id FROM filament WHERE manufacturer = ?').get(DEMO_MANUFACTURER) as {
+          id: string;
+        }
+      ).id;
+      db.prepare(
+        "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, '00000000-0000-4000-8000-00000000a001', ?, 'loc1.shelf-1', 'spool', 2)",
+      ).run(TENANT_A, demo);
+      const before = snapshot(db);
+      expect(() => removeDemo(db, TENANT_A)).toThrow(DemoRemovalRefused);
+      expect(snapshot(db)).toEqual(before);
+    });
+
+    it('still removes the demo stock line after its count was tapped', async () => {
+      const { db } = await setup();
+      fillDemo(db, TENANT_A);
+      db.prepare('UPDATE stock_line SET count = 7').run();
+      expect(removeDemo(db, TENANT_A)).toBe(27);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM stock_line').get()).toMatchObject({ n: 0 });
+    });
+
     it('refuses when an event names a demo clip with another filament, or the demo filament with no clip', async () => {
       // Rule: demo removal deletes an event only when its clip is a demo clip and its filament is the
       // demo filament (or empty). Anything else touching the demo is not demo history: stop, change nothing.
