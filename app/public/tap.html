@@ -33,6 +33,7 @@
       <section id="tag-card" aria-labelledby="tag-heading" hidden>
         <h2 id="tag-heading" tabindex="-1"></h2>
         <p id="tag-detail"></p>
+        <div id="tag-body"></div>
         <button type="button" id="pick-up" hidden>Move this clip</button>
         <button type="button" id="move-held-here" hidden></button>
       </section>
@@ -43,6 +44,15 @@
       </section>
 
       <div id="mover"></div>
+
+      <section id="browse" aria-labelledby="browse-heading" hidden>
+        <h2 id="browse-heading">Choose a place instead</h2>
+        <p id="browse-help">
+          No tag at hand? Choose a place to see where it is, its room and what is on it.
+        </p>
+        <label for="browse-place">Place</label>
+        <select id="browse-place" aria-describedby="browse-help"></select>
+      </section>
 
       <p><a href="/">Open SpoolSpot</a></p>
     </main>
