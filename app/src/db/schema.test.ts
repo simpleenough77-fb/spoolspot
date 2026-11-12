@@ -406,10 +406,11 @@ describe('hardening (independent review)', () => {
     addTenant(db, TENANT_A);
     addLocation(db, TENANT_A, 'room', 'container');
     addLocation(db, TENANT_A, 'shelf', 'passive_storage', 'room');
-    // 0001's message or 0005's: both refuse it, and SQLite picks which trigger runs first.
+    // 0005's rule answers first; 0001's ("a location with children must stay a container") would also
+    // refuse this container, which has a child.
     expect(() =>
       db.prepare("UPDATE location SET leaf = 1, type = 'passive_storage' WHERE id = 'room'").run(),
-    ).toThrow(/must stay a container|a container stays a container/);
+    ).toThrow(/a container stays a container/);
     const filament = addFilament(db, TENANT_A);
     db.prepare(
       "INSERT INTO stock_line (tenant_id, id, filament_id, location_id, pack, count) VALUES (?, ?, ?, 'shelf', 'spool', 1)",

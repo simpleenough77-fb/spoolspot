@@ -322,3 +322,80 @@ describe('a rename (id change) takes the tag with it', () => {
     });
   });
 });
+
+describe('a rename that also changes tag_id, and ids shared across record kinds', () => {
+  const tagRows = (db: Db, tenant: string) =>
+    db
+      .prepare('SELECT tag_id, kind, target_id FROM tag WHERE tenant_id = ? ORDER BY tag_id')
+      .all(tenant);
+  const column = (db: Db, tenant: string, id: string) =>
+    (
+      db.prepare('SELECT tag_id FROM location WHERE tenant_id = ? AND id = ?').get(tenant, id) as
+        { tag_id: string | null } | undefined
+    )?.tag_id;
+
+  it('a leaf renamed and untagged in one statement drops its tag (as in 0002) and leaves nothing out of step', () => {
+    const { db } = setup();
+    db.prepare(
+      "UPDATE location SET id = 'bin-2', tag_id = NULL WHERE tenant_id = ? AND id = 'bin'",
+    ).run(TENANT_A);
+    expect(column(db, TENANT_A, 'bin-2')).toBeNull();
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM tag WHERE tenant_id = ? AND (tag_id = ? OR target_id = 'bin-2')",
+        )
+        .get(TENANT_A, T.bin),
+    ).toEqual({ n: 0 });
+  });
+
+  it('an out-of-step leaf renamed and given a tag in one statement ends with only the new tag', () => {
+    // Built on an 0004 database: 'spare-box' became a leaf and kept its registry-only tag.
+    const { db } = memoryDatabaseUpTo('0004_stock_passive_only.sql');
+    populate(db, TENANT_A);
+    db.prepare(
+      `UPDATE location SET type = 'clip_storage', leaf = 1, capacity = 5, capacity_mode = 'soft',
+              tag_source = 'sticker' WHERE tenant_id = ? AND id = 'spare-box'`,
+    ).run(TENANT_A);
+    runMigrations(db);
+    const fresh = 'F0110WTAG00A';
+    db.prepare(
+      "UPDATE location SET id = 'spare-box-2', tag_id = ? WHERE tenant_id = ? AND id = 'spare-box'",
+    ).run(fresh, TENANT_A);
+    expect(column(db, TENANT_A, 'spare-box-2')).toBe(fresh);
+    const rows = tagRows(db, TENANT_A) as { tag_id: string; target_id: string }[];
+    expect(rows.filter((r) => r.target_id === 'spare-box-2')).toEqual([
+      { tag_id: fresh, kind: 'location', target_id: 'spare-box-2' },
+    ]);
+    expect(rows.some((r) => r.tag_id === T.spare)).toBe(false);
+  });
+
+  it("renaming a location whose id equals a clip's id leaves the clip's registry row alone", () => {
+    // Ids may be UUIDs for both kinds, so a location and a clip can share one.
+    const { db } = memoryDatabaseUpTo('0004_stock_passive_only.sql');
+    populate(db, TENANT_A);
+    db.prepare(
+      "INSERT INTO location (tenant_id, id, name, type, leaf) VALUES (?, ?, 'Same id as a clip', 'container', 0)",
+    ).run(TENANT_A, CLIP_A);
+    const shared = 'F0110WTAG00B';
+    db.prepare(
+      "INSERT INTO tag (tenant_id, tag_id, kind, target_id) VALUES (?, ?, 'location', ?)",
+    ).run(TENANT_A, shared, CLIP_A);
+    runMigrations(db);
+    db.prepare("UPDATE location SET id = 'renamed-place' WHERE tenant_id = ? AND id = ?").run(
+      TENANT_A,
+      CLIP_A,
+    );
+    const rows = tagRows(db, TENANT_A) as { tag_id: string; kind: string; target_id: string }[];
+    expect(rows.find((r) => r.tag_id === T.clipA)).toEqual({
+      tag_id: T.clipA,
+      kind: 'clip',
+      target_id: CLIP_A,
+    });
+    expect(rows.find((r) => r.tag_id === shared)).toEqual({
+      tag_id: shared,
+      kind: 'location',
+      target_id: 'renamed-place',
+    });
+  });
+});
