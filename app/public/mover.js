@@ -7,13 +7,22 @@ import { ApiError, getJson, postJson } from './api.js';
 const HOLD_KEY = 'spoolspot.held-clip';
 const HOLD_MINUTES = 10;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const PLACE = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
 
-/** The held clip is a non-secret id and a time, so it may live in localStorage and survive the next tap. */
-export function holdClip(id, label) {
+/**
+ * The held clip is a non-secret id, a label, the place it was picked up from (a location id the page
+ * already showed, or null) and a time, so it may live in localStorage and survive the next tap.
+ */
+export function holdClip(id, label, from = null) {
   try {
     localStorage.setItem(
       HOLD_KEY,
-      JSON.stringify({ id, label: String(label).slice(0, 120), at: Date.now() }),
+      JSON.stringify({
+        id,
+        label: String(label).slice(0, 120),
+        from: typeof from === 'string' && from.length <= 64 && PLACE.test(from) ? from : null,
+        at: Date.now(),
+      }),
     );
   } catch {
     /* storage blocked: the picker below still works */
@@ -32,7 +41,11 @@ export function heldClip() {
       Date.now() - raw.at < HOLD_MINUTES * 60_000 &&
       Date.now() >= raw.at
     ) {
-      return { id: raw.id, label: raw.label };
+      const from =
+        typeof raw.from === 'string' && raw.from.length <= 64 && PLACE.test(raw.from)
+          ? raw.from
+          : null;
+      return { id: raw.id, label: raw.label, from };
     }
     localStorage.removeItem(HOLD_KEY);
   } catch {
@@ -207,7 +220,10 @@ export function createMoverPanel(leaves, onMoved, hooks = {}) {
     element: panel,
     show(next, placeId) {
       clip = next;
-      which.textContent = `Clip: ${next.label}`;
+      // The label is a name: isolate it so bidi characters in it cannot reorder the sentence.
+      const name = document.createElement('bdi');
+      name.textContent = next.label;
+      which.replaceChildren('Clip: ', name);
       if (placeId && [...select.options].some((o) => o.value === placeId)) select.value = placeId;
       status.textContent = '';
       warning.textContent = '';
