@@ -78,43 +78,57 @@ export function createClaimOps(deps: {
       const tagId = normalizeTagId(tagText);
       // The fixed demo IDs are public and owned by the demo data; they are refused like any invalid ID.
       if (tagId === null || isReservedTagId(tagId)) return { ok: false, refusal: 'invalid_tag' };
-      const places = await sql.all<{ leaf: number }>(
-        'SELECT leaf FROM location WHERE tenant_id = ? AND id = ?',
+      const places = await sql.all<{ leaf: number; tag_id: string | null }>(
+        'SELECT leaf, tag_id FROM location WHERE tenant_id = ? AND id = ?',
         [tenantId, locationId],
       );
       const place = places[0];
       if (!place) return { ok: false, refusal: 'location_not_found' };
-      const current =
+      const registered =
         (
           await sql.all<{ tag_id: string }>(
             "SELECT tag_id FROM tag WHERE tenant_id = ? AND kind = 'location' AND target_id = ?",
             [tenantId, locationId],
           )
         )[0]?.tag_id ?? null;
+      // The place's current tag, read the same way for leaves and containers (SPOOL-198): a container's
+      // tag is its registry row; a leaf's is its column, which the registry follows. A leaf that has a
+      // registry row its column does not show (a container turned into a leaf before migration 0005)
+      // still counts that row as its tag, so it is never dropped without `replace`.
+      const column = place.leaf === 1 ? place.tag_id : null;
+      const current = column ?? registered;
+      // The tag is fully in place: for a leaf, in its column as well as the registry.
+      const settled = current === tagId && (place.leaf !== 1 || column === tagId);
       const done = (changed: boolean) =>
         ({
           ok: true,
           tag_id: tagId,
           location_id: locationId,
-          replaced: changed && current !== null,
+          replaced: changed && current !== null && current !== tagId,
           changed,
         }) as const;
-      if (current === tagId) return done(false);
-      const inUse = await sql.all<{ one: number }>(
-        'SELECT 1 AS one FROM tag WHERE tenant_id = ? AND tag_id = ?',
-        [tenantId, tagId],
-      );
-      if (inUse.length > 0) return { ok: false, refusal: 'tag_in_use' };
-      if (current !== null && !replace) return { ok: false, refusal: 'location_has_tag' };
+      if (settled) return done(false);
+      // The place's own registry row is not "in use elsewhere": claiming it again sets the leaf's column.
+      if (registered !== tagId) {
+        const inUse = await sql.all<{ one: number }>(
+          'SELECT 1 AS one FROM tag WHERE tenant_id = ? AND tag_id = ?',
+          [tenantId, tagId],
+        );
+        if (inUse.length > 0) return { ok: false, refusal: 'tag_in_use' };
+      }
+      if (current !== null && current !== tagId && !replace) {
+        return { ok: false, refusal: 'location_has_tag' };
+      }
       // One guarded statement: it applies only if the place still has the tag read above, so a
       // concurrent claim cannot be overwritten unseen. For a leaf the 0002 trigger swaps the registry
-      // row inside the same statement; a clash there aborts the whole statement.
+      // row inside the same statement (including a row its column did not show); a clash there aborts
+      // the whole statement.
       let statement: { query: string; params: (string | null)[] };
       if (place.leaf === 1) {
         statement = {
           query: `UPDATE location SET tag_id = ?
                    WHERE tenant_id = ? AND id = ? AND leaf = 1 AND tag_id IS ?`,
-          params: [tagId, tenantId, locationId, current],
+          params: [tagId, tenantId, locationId, column],
         };
       } else if (current === null) {
         statement = {

@@ -8,9 +8,11 @@ import { ClaimInvariantError } from '../data/claim.ts';
 import { createScopedData } from '../data/scoped.ts';
 import { DEMO_PLACE_TAGS } from '../seed/demo.ts';
 import type { Sql, SqlParam, Statement } from '../db/sql.ts';
+import { runMigrations } from '../db/migrate.ts';
 import { importSeed } from '../seed/import.ts';
 import {
   memoryDatabase,
+  memoryDatabaseUpTo,
   readJson,
   readSeed,
   SEED_SCHEMA_PATH,
@@ -544,5 +546,137 @@ describe('claimTag review round 1 (SPOOL-191)', () => {
       createScopedData(sql, readOnly).claimTag(TAG_1, SHELF, false),
     ).rejects.toBeInstanceOf(ForbiddenError);
     expect(registry(TENANT_A)).toEqual([]);
+  });
+});
+
+describe('claimTag reads the current tag the same way for leaves and containers (SPOOL-198)', () => {
+  const LEGACY_TAG = 'CA1MTAG00004';
+  /**
+   * A database from before migration 0005 in which tenant A's tagged, childless container 'legacy' was
+   * changed into a leaf: its tag stays a registry row and its tag_id column is NULL. Tenant B has the
+   * same place, tagged with the same ID, still a container. Then 0005 is applied.
+   */
+  function legacy() {
+    const { db, sql } = memoryDatabaseUpTo('0004_stock_passive_only.sql');
+    for (const tenant of [TENANT_A, TENANT_B]) {
+      db.prepare('INSERT INTO tenant_settings (tenant_id) VALUES (?)').run(tenant);
+      db.prepare(
+        "INSERT INTO location (tenant_id, id, name, type, leaf) VALUES (?, 'legacy', 'Legacy', 'container', 0)",
+      ).run(tenant);
+      db.prepare(
+        "INSERT INTO tag (tenant_id, tag_id, kind, target_id) VALUES (?, ?, 'location', 'legacy')",
+      ).run(tenant, LEGACY_TAG);
+    }
+    db.prepare(
+      `UPDATE location SET type = 'passive_storage', leaf = 1, capacity = 5, capacity_mode = 'soft',
+              tag_source = 'sticker' WHERE tenant_id = ? AND id = 'legacy'`,
+    ).run(TENANT_A);
+    runMigrations(db);
+    const state = (tenant: string) => ({
+      column: (
+        db
+          .prepare("SELECT tag_id FROM location WHERE tenant_id = ? AND id = 'legacy'")
+          .get(tenant) as { tag_id: string | null }
+      ).tag_id,
+      registry: db
+        .prepare('SELECT tag_id, kind, target_id FROM tag WHERE tenant_id = ? ORDER BY tag_id')
+        .all(tenant) as unknown as { tag_id: string; kind: string; target_id: string }[],
+    });
+    const data = (tenant: string) => createScopedData(sql, writer(tenant));
+    return { db, sql, state, data };
+  }
+
+  it('after 0005 the out-of-step leaf cannot be made: a tagged empty container stays a container', async () => {
+    const { db, sql } = await setup();
+    const data = createScopedData(sql, writer(TENANT_A));
+    db.prepare(
+      "INSERT INTO location (tenant_id, id, name, type, leaf) VALUES (?, 'bin-box', 'Bin box', 'container', 0)",
+    ).run(TENANT_A);
+    expect(await data.claimTag(TAG_1, 'bin-box', false)).toMatchObject({ ok: true, changed: true });
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE location SET type = 'clip_storage', leaf = 1, capacity = 5, capacity_mode = 'soft',
+                  tag_source = 'sticker' WHERE tenant_id = ? AND id = 'bin-box'`,
+        )
+        .run(TENANT_A),
+    ).toThrow(/a container stays a container/);
+    // So the container's claim and replace keep working.
+    expect(await data.claimTag(TAG_1, 'bin-box', false)).toMatchObject({
+      ok: true,
+      changed: false,
+    });
+    expect(await data.claimTag(TAG_2, 'bin-box', true)).toMatchObject({
+      ok: true,
+      changed: true,
+      replaced: true,
+    });
+  });
+
+  it('claiming the same ID again sets the leaf column instead of answering "unchanged"', async () => {
+    const { state, data } = legacy();
+    expect(state(TENANT_A).column).toBeNull();
+    expect(await data(TENANT_A).claimTag(LEGACY_TAG, 'legacy', false)).toEqual({
+      ok: true,
+      tag_id: LEGACY_TAG,
+      location_id: 'legacy',
+      replaced: false,
+      changed: true,
+    });
+    expect(state(TENANT_A)).toEqual({
+      column: LEGACY_TAG,
+      registry: [{ tag_id: LEGACY_TAG, kind: 'location', target_id: 'legacy' }],
+    });
+    // Now it is in step, and a further claim changes nothing.
+    expect(await data(TENANT_A).claimTag(LEGACY_TAG, 'legacy', false)).toMatchObject({
+      ok: true,
+      changed: false,
+    });
+  });
+
+  it('replace swaps the registry-only tag in one write instead of answering conflict forever', async () => {
+    const { state, data } = legacy();
+    // Without replace the registry tag counts as the place's tag: it is never dropped silently.
+    expect(await data(TENANT_A).claimTag(TAG_2, 'legacy', false)).toEqual({
+      ok: false,
+      refusal: 'location_has_tag',
+    });
+    expect(state(TENANT_A)).toEqual({
+      column: null,
+      registry: [{ tag_id: LEGACY_TAG, kind: 'location', target_id: 'legacy' }],
+    });
+    for (let i = 0; i < 2; i += 1) {
+      const tag = i === 0 ? TAG_2 : TAG_3;
+      expect(await data(TENANT_A).claimTag(tag, 'legacy', true)).toEqual({
+        ok: true,
+        tag_id: tag,
+        location_id: 'legacy',
+        replaced: true,
+        changed: true,
+      });
+      expect(state(TENANT_A)).toEqual({
+        column: tag,
+        registry: [{ tag_id: tag, kind: 'location', target_id: 'legacy' }],
+      });
+    }
+    // The old ID was released: claiming it again is a plain replace.
+    expect(await data(TENANT_A).claimTag(LEGACY_TAG, 'legacy', true)).toMatchObject({ ok: true });
+  });
+
+  it("another tenant's same-id container and same tag are never read or changed", async () => {
+    const { state, data } = legacy();
+    const before = state(TENANT_B);
+    expect(await data(TENANT_A).claimTag(LEGACY_TAG, 'legacy', false)).toMatchObject({ ok: true });
+    expect(await data(TENANT_A).claimTag(TAG_2, 'legacy', true)).toMatchObject({ ok: true });
+    expect(state(TENANT_B)).toEqual(before);
+    // B's container claim still sees B's own registry row only.
+    expect(await data(TENANT_B).claimTag(LEGACY_TAG, 'legacy', false)).toMatchObject({
+      ok: true,
+      changed: false,
+    });
+    expect(await data(TENANT_B).claimTag(TAG_2, 'legacy', false)).toEqual({
+      ok: false,
+      refusal: 'location_has_tag',
+    });
   });
 });

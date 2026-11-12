@@ -292,6 +292,7 @@ describe('raw database paths outside the adapter (SPOOL-199)', () => {
   it('only the known files open the database or use its handle', () => {
     const allowed = [
       'app/src/db/integrity.ts',
+      'app/src/db/leaf-tag-desync.ts',
       'app/src/db/migrate.ts',
       'app/src/db/sqlite.ts',
       'app/src/db/stock-off-passive.ts',

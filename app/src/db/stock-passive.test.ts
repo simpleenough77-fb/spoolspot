@@ -205,7 +205,10 @@ describe('migration 0004: boxed stock at passive storage only', () => {
     insertLine(db, TENANT_B, fb, 'active-use', 'spool', 1);
     const before = db.prepare('SELECT * FROM stock_line ORDER BY rowid').all();
 
-    expect(runMigrations(db)).toEqual(['0004_stock_passive_only.sql']);
+    expect(runMigrations(db)).toEqual([
+      '0004_stock_passive_only.sql',
+      '0005_container_stays_container.sql',
+    ]);
     // Nothing deleted or moved.
     expect(db.prepare('SELECT * FROM stock_line ORDER BY rowid').all()).toEqual(before);
     // The listing names exactly the lines off passive storage, per tenant.
