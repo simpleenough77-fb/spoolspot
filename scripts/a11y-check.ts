@@ -40,6 +40,16 @@ const CONTAINER_TAG = 'SKQT00000002';
 const ACTIVE_TAG = 'SKQT00000003';
 /** A clip with no place recorded. */
 const NOWHERE_TAG = 'S00000000098';
+/** A clip loaded in a printer slot. */
+const SLOT_CLIP_TAG = 'S00000000097';
+/** A clip whose filament has hostile names. */
+const HOSTILE_CLIP_TAG = 'S00000000096';
+/** A container tag on Home: every leaf, printer slots included. */
+const HOME_TAG = 'SKQT00000004';
+/** Names that would become markup if any of them reached innerHTML (all within the 80-character limit). */
+const HOSTILE_PLACE = 'S3 "><img src=x id=injected onerror=window.__pwned=1>\u202Eevil';
+const HOSTILE_MAKER = '<script id=injected-s>window.__pwned=2</script>';
+const HOSTILE_COLOR = 'x" id="injected-a" onmouseover="window.__pwned=3';
 const TENANT = '3b1c0d1e-5a1e-4c63-9a0e-5b2a6f0c7d11';
 // A throwaway token for this scan only: it protects an in-memory database that lives for seconds.
 const CODE = 'A11Y01';
@@ -110,6 +120,24 @@ async function scanApp() {
   db.prepare(
     "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, '00000000-0000-4000-8000-0000000000cc', ?, ?, NULL, 'free')",
   ).run(TENANT, NOWHERE_TAG, filament);
+  db.prepare(
+    "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, '00000000-0000-4000-8000-0000000000dd', ?, ?, 'dreammaker.ams-a.slot-1', 'on_spool')",
+  ).run(TENANT, SLOT_CLIP_TAG, filament);
+  db.prepare(
+    "INSERT INTO tag (tenant_id, tag_id, kind, target_id) VALUES (?, ?, 'location', 'home')",
+  ).run(TENANT, HOME_TAG);
+  // Hostile names: a place inside Active storage and a filament with a clip on another active shelf.
+  db.prepare('UPDATE location SET name = ? WHERE tenant_id = ? AND id = ?').run(
+    HOSTILE_PLACE,
+    TENANT,
+    'loc3.shelf-3',
+  );
+  db.prepare(
+    "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, '00000000-0000-4000-8000-000000000003', ?, 'PLA', ?, 'disposable')",
+  ).run(TENANT, HOSTILE_MAKER, HOSTILE_COLOR);
+  db.prepare(
+    "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, '00000000-0000-4000-8000-0000000000ee', ?, '00000000-0000-4000-8000-000000000003', 'loc2.shelf-4', 'on_spool')",
+  ).run(TENANT, HOSTILE_CLIP_TAG);
   // The real app with the real static handler, so the CSP header and module scripts are exercised.
   return createApp({
     auth: createDevTokenProvider({ token: SCAN_TOKEN, tenantId: TENANT }),
@@ -389,6 +417,44 @@ try {
       },
       [tag, held ?? ''] as const,
     );
+  /** Nothing from a hostile name became an element or ran; the name is shown as literal text. */
+  const noInjection = async (tab: Page, label: string, literal: string): Promise<number> => {
+    const found = await tab.evaluate(() => ({
+      elements: document.querySelectorAll(
+        '#injected, #injected-s, #injected-a, main img, main script',
+      ).length,
+      ran: (window as unknown as { __pwned?: number }).__pwned ?? 0,
+      text: document.querySelector('main')?.textContent ?? '',
+    }));
+    let bad = 0;
+    if (found.elements > 0 || found.ran !== 0) {
+      console.error(
+        `::error::${label}: a hostile name became markup (${String(found.elements)} element(s), ran ${String(found.ran)})`,
+      );
+      bad += 1;
+    }
+    return bad + expectText(found.text, literal, `${label}: the hostile name is shown as text`);
+  };
+  /** Before the person confirms, the status line must not say anything moved (no optimistic text). */
+  const notMovedYet = async (tab: Page, scheme: string): Promise<number> => {
+    const said = await tab.locator('#tap-status').innerText();
+    if (!said.includes('Moved')) return 0;
+    console.error(
+      `::error::tap (${scheme}): the page said "${said}" before the move was confirmed`,
+    );
+    return 1;
+  };
+  /** Puts a held clip in this browser's storage, as another tab would. */
+  const setHeld = (tab: Page, id: string, label: string, from: string | null) =>
+    tab.evaluate(
+      ([i, l, f]) => {
+        localStorage.setItem(
+          'spoolspot.held-clip',
+          JSON.stringify({ id: i, label: l, from: f, at: Date.now() }),
+        );
+      },
+      [id, label, from] as const,
+    );
   const heldId = (tab: Page) =>
     tab.evaluate(() => {
       const raw = localStorage.getItem('spoolspot.held-clip');
@@ -536,12 +602,17 @@ try {
       'the suggested place is marked in the list in words',
     );
     violations += await axe(tab, `tap (${scheme}, container with a suggestion for a held clip)`);
+    // A hostile place name inside: literal text, in its own <bdi>, and nothing injected or run.
+    violations += await noInjection(tab, `tap (${scheme}, hostile place name)`, '"><img src=x');
+    violations += (await tab.locator('#inside-list li span bdi').count()) > 0 ? 0 : 1;
     violations += await reflow(
       tab,
       `tap (${scheme}, 320px wide, text at 200%, container with a held clip)`,
     );
     await tab.click('#suggestion-go');
+    // The suggestion goes through the shared mover: nothing moves until "Move here" is tapped.
     await tab.locator('#mover-go').waitFor();
+    violations += await notMovedYet(tab, scheme);
     violations += (await tab.locator('#mover-place').inputValue()) === best?.location_id ? 0 : 1;
     await tab.click('#mover-go');
     await tab.locator('#tap-status:has-text("Moved.")').waitFor();
@@ -552,10 +623,57 @@ try {
     );
     violations += await axe(tab, `tap (${scheme}, after a move from a container)`);
 
+    // A clip whose filament has hostile names: shown as literal text, nothing injected or run.
+    await tab.goto(`${tapBase}/${CODE}${HOSTILE_CLIP_TAG}`);
+    await tab.locator('#clip-place').waitFor();
+    violations += await noInjection(tab, `tap (${scheme}, hostile filament name)`, HOSTILE_MAKER);
+    violations += await axe(tab, `tap (${scheme}, hostile filament name)`);
+
+    // A held clip loaded in a printer slot: the container says so and offers no Choose.
+    await tab.goto(`${tapBase}/${CODE}${SLOT_CLIP_TAG}`);
+    await tab.click('#pick-up');
+    await tab.locator('#mover-go').waitFor();
+    await tab.goto(`${tapBase}/${CODE}${CONTAINER_TAG}`);
+    await tab.locator('#suggestion-text').waitFor();
+    violations += expectText(
+      await tab.locator('#suggestion-text').innerText(),
+      'is loaded in a printer slot. Unload it from the printer first',
+      'a held clip in a slot is told to be unloaded first',
+    );
+    violations += (await tab.locator('#inside-list button, #suggestion-go').count()) === 0 ? 0 : 1;
+    violations += await axe(tab, `tap (${scheme}, container, held clip in a slot)`);
+
+    // A held clip the server does not know: not presented as ranked for it; no Choose.
+    await setHeld(tab, '00000000-0000-4000-8000-00000000ffff', 'Gone PLA Grey', 'loc1.shelf-1');
+    await tab.goto(`${tapBase}/${CODE}${ACTIVE_TAG}`);
+    await tab.locator('#suggestion-text').waitFor();
+    violations += expectText(
+      await tab.locator('#suggestion-text').innerText(),
+      'was not found here. Tap its tag again to hold it.',
+      'a held clip the server does not know is said to be not found',
+    );
+    violations += (await tab.locator('#suggestion').innerText()).includes('Best place') ? 1 : 0;
+    violations += (await tab.locator('#inside-list button, #suggestion-go').count()) === 0 ? 0 : 1;
+    violations += await axe(tab, `tap (${scheme}, container, held clip not found)`);
+
     // Holding a clip where nothing inside suits it: no suggestion; choosing a full hard place warns.
     await tab.goto(`${tapBase}/${CODE}${fullTag}`);
     await tab.click('#pick-up');
     await tab.locator('#mover-go').waitFor();
+    // Slots are never choosable: on Home (every leaf), no slot row has a button, other rows do.
+    await tab.goto(`${tapBase}/${CODE}${HOME_TAG}`);
+    await tab.locator('#inside-list button').first().waitFor();
+    const slotButtons = await tab
+      .locator('#inside-list li', { hasText: 'Printer slot' })
+      .locator('button')
+      .count();
+    const slotRows = await tab.locator('#inside-list li', { hasText: 'Printer slot' }).count();
+    if (slotButtons > 0 || slotRows === 0) {
+      console.error(
+        `::error::slots must be listed without a Choose button (${String(slotRows)} rows, ${String(slotButtons)} buttons)`,
+      );
+      violations += 1;
+    }
     await tab.goto(`${tapBase}/${CODE}${CONTAINER_TAG}`);
     await tab.locator('#inside-list button').first().waitFor();
     violations += expectText(
@@ -564,7 +682,13 @@ try {
       'a container with nothing suitable says so',
     );
     violations += await axe(tab, `tap (${scheme}, container without a suggestion)`);
-    await tab.getByRole('button', { name: 'Choose Location 1 - Shelf 2' }).click();
+    // Another clip is picked up elsewhere (another tab): a Choose redraws for it instead of moving.
+    await setHeld(tab, '00000000-0000-4000-8000-000000000017', 'Scan PLA Black', 'loc1.shelf-1');
+    await tab.getByRole('button', { name: /^Choose\W*Location 1 - Shelf 1\W*$/u }).click();
+    await tab.locator('#tap-status:has-text("The held clip changed to")').waitFor();
+    violations += (await tab.locator('#mover-go').isVisible()) ? 1 : 0;
+    violations += await axe(tab, `tap (${scheme}, held clip changed)`);
+    await tab.getByRole('button', { name: /^Choose\W*Location 1 - Shelf 2\W*$/u }).click();
     await tab.click('#mover-go');
     await tab.locator('#mover-anyway:not([hidden])').waitFor();
     violations += expectText(
@@ -572,11 +696,26 @@ try {
       'hard limit',
       'a full hard place chosen from a container warns before moving',
     );
+    // Nothing is said to have moved while the confirm is pending.
+    violations += await notMovedYet(tab, scheme);
     violations += await axe(tab, `tap (${scheme}, container move hard-limit warning)`);
     await tab.click('#mover-cancel');
-    // Unknown tag of this instance and a wrong instance code: the same neutral message.
+    // Unknown tag of this instance and a wrong instance code: the same neutral message. Exactly one
+    // API request is made for an unknown tag (the lookup): nothing else is asked for.
+    const apiCalls: string[] = [];
+    const record = (r: { url(): string }) => {
+      const path = new URL(r.url()).pathname;
+      if (path.startsWith('/api/')) apiCalls.push(path);
+    };
+    tab.on('request', record);
     await tab.goto(`${tapBase}/${CODE}SKQT0000ZZZZ`);
     await tab.locator('#tap-status:has-text("not recognised")').waitFor();
+    await tab.waitForLoadState('networkidle');
+    tab.off('request', record);
+    if (apiCalls.join(' ') !== '/api/v1/tags/SKQT0000ZZZZ') {
+      console.error(`::error::an unknown tag made these API requests: ${apiCalls.join(', ')}`);
+      violations += 1;
+    }
     violations += (await tab.locator('#browse').isVisible()) ? 1 : 0;
     violations += (await tab.locator('#tag-card').isVisible()) ? 1 : 0;
     violations += await axe(tab, `tap (${scheme}, unknown tag)`);
