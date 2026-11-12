@@ -227,6 +227,25 @@ async function readMoveBody(c: Parameters<typeof readJsonObject>[0]): Promise<{
   return { to, confirm: confirm === true };
 }
 
+/** `{ location_id, replace? }` as strict JSON, or null. Extra keys are refused. */
+async function readClaimBody(c: Parameters<typeof readJsonObject>[0]): Promise<{
+  location_id: string;
+  replace: boolean;
+} | null> {
+  const record = await readJsonObject(c);
+  if (record === null || !onlyKeys(record, ['location_id', 'replace'])) return null;
+  const { location_id, replace } = record;
+  if (
+    typeof location_id !== 'string' ||
+    location_id.length > 64 ||
+    !LOCATION_ID.test(location_id) ||
+    (replace !== undefined && typeof replace !== 'boolean')
+  ) {
+    return null;
+  }
+  return { location_id, replace: replace === true };
+}
+
 interface StockBody {
   filament_id: string;
   location_id: string;
@@ -514,6 +533,37 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const suggestions = await c.get('data').placementSuggestions(count, type, within);
     if (suggestions === 'not_found') return c.json({ error: 'not_found' }, 404);
     return c.json({ suggestions });
+  });
+
+  // Claim an existing tag for a place (SPOOL-191 decision 4): signed in, with the write scope, the person
+  // taps or scans a tag already carrying an ADR-0001 tag ID and assigns it. Rate limited like the tag
+  // lookup. A refusal names only the rule; it never says what an ID in use belongs to.
+  const claimLimit = createRateLimiter({
+    limit: options.rateLimits?.resolverPerMinute ?? 60,
+    windowMs: 60_000,
+  });
+  app.post('/api/v1/tags/:tag/claim', async (c) => {
+    if (!hasScope(c.get('principal'), Scope.InventoryWrite)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const key = clientKey(c);
+    if (!claimLimit.hit(key)) return tooMany(claimLimit, key);
+    const tagId = normalizeTagId(c.req.param('tag'));
+    const body = await readClaimBody(c);
+    if (tagId === null || body === null) return c.json({ error: 'invalid_request' }, 400);
+    const result = await c.get('data').claimTag(tagId, body.location_id, body.replace);
+    if (result.ok) {
+      const { tag_id, location_id, replaced, changed } = result;
+      return c.json({ tag_id, location_id, replaced, changed });
+    }
+    switch (result.refusal) {
+      case 'invalid_tag':
+        return c.json({ error: 'invalid_request' }, 400);
+      case 'location_not_found':
+        return c.json({ error: 'not_found' }, 404);
+      default:
+        return c.json({ error: result.refusal }, 409);
+    }
   });
 
   app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));
