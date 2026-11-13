@@ -20,9 +20,9 @@ const REFUSALS = {
   location_not_found: 'That filament or place is not recognised here. Nothing changed.',
 };
 
-const filamentLabel = (f) => `${f.manufacturer} ${f.type} ${f.color}`;
+export const filamentLabel = (f) => `${f.manufacturer} ${f.type} ${f.color}`;
 
-function isFilament(f) {
+export function isFilament(f) {
   return (
     f !== null &&
     typeof f === 'object' &&

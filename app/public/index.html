@@ -51,6 +51,39 @@
         <ul id="place-suggestions"></ul>
       </section>
 
+      <section id="find-section" aria-labelledby="find-heading" hidden>
+        <h2 id="find-heading">Find a spool</h2>
+        <p>
+          Found a spool and not sure where it goes? No tag needed: choose its filament, then tap its
+          clip to see where it belongs.
+        </p>
+        <p id="find-empty" hidden>
+          No filaments imported yet. Import the catalog first (see the README), then come back.
+        </p>
+        <fieldset id="find-filament">
+          <legend>Which filament?</legend>
+          <label for="find-mfr">Manufacturer</label>
+          <select id="find-mfr"></select>
+          <label for="find-type">Type</label>
+          <select id="find-type"></select>
+          <label for="find-color">Color</label>
+          <select id="find-color"></select>
+        </fieldset>
+        <p id="find-status" role="status"></p>
+        <div id="find-list" hidden>
+          <h3 id="find-clips-heading" tabindex="-1">Clips of this filament</h3>
+          <ul id="find-clips" class="plain" aria-labelledby="find-clips-heading"></ul>
+        </div>
+        <div id="find-clip" hidden>
+          <h3 id="find-clip-heading" tabindex="-1"></h3>
+          <p id="find-clip-detail"></p>
+          <div id="find-clip-body"></div>
+          <button type="button" id="find-pick-up">Move this clip</button>
+          <button type="button" id="find-back" class="secondary">Back to the clips</button>
+        </div>
+        <div id="find-mover"></div>
+      </section>
+
       <section id="move-section" aria-labelledby="move-heading" hidden>
         <h2 id="move-heading">Move a clip</h2>
         <p>No tag needed: pick the place it is in now, tap the clip, then pick where it goes.</p>

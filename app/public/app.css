@@ -267,14 +267,16 @@ button[aria-disabled='true'] {
   opacity: 0.7;
 }
 
-#mover-warning {
+#mover-warning,
+.mover-warning {
   margin: 0.75rem 0;
   padding: 0.5rem 0.75rem;
   border-left: 6px solid var(--border);
   font-weight: 600;
 }
 
-#mover-warning:empty {
+#mover-warning:empty,
+.mover-warning:empty {
   margin: 0;
   padding: 0;
   border: 0;
@@ -282,6 +284,9 @@ button[aria-disabled='true'] {
 
 #move-note:focus,
 #mover-heading:focus,
+#find-mover-heading:focus,
+#find-clip-heading:focus,
+#find-clips-heading:focus,
 #tag-heading:focus {
   outline: none;
 }
@@ -381,6 +386,29 @@ ol.path li[aria-current='location'] {
 
 ul.plain li.suggested {
   font-weight: 600;
+}
+
+/* Find a spool (SPOOL-211): the filament chooser and the list of that filament's clips. */
+fieldset {
+  min-width: 0;
+  margin: 0.75rem 0;
+  padding: 0.25rem 0.75rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+
+legend {
+  font-weight: 600;
+  padding: 0 0.25rem;
+}
+
+fieldset label {
+  margin-top: 0.5rem;
+}
+
+#find-clips button {
+  max-width: 100%;
+  text-align: left;
 }
 
 @media (prefers-reduced-motion: reduce) {

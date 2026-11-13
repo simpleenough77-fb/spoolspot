@@ -153,19 +153,29 @@ function el(tag, text, attrs = {}) {
  * `leaves` come from leafPaths(). `onMoved(result)` runs after a successful move.
  */
 export function createMoverPanel(leaves, onMoved, hooks = {}) {
-  const panel = el('section', '', { 'aria-labelledby': 'mover-heading' });
+  // A second panel on the same page (SPOOL-211) takes an id prefix and a heading level; the defaults
+  // keep the ids and the h2 the pages had before.
+  const id = (base) => `${hooks.idPrefix ?? ''}${base}`;
+  const panel = el('section', '', { 'aria-labelledby': id('mover-heading') });
   panel.hidden = true;
-  const heading = el('h2', 'Move a clip', { id: 'mover-heading', tabindex: '-1' });
-  const which = el('p', '', { id: 'mover-clip' });
-  const pickLabel = el('label', 'Move it to', { for: 'mover-place' });
-  const select = el('select', '', { id: 'mover-place' });
+  const heading = el(hooks.headingTag ?? 'h2', 'Move a clip', {
+    id: id('mover-heading'),
+    tabindex: '-1',
+  });
+  const which = el('p', '', { id: id('mover-clip') });
+  const pickLabel = el('label', 'Move it to', { for: id('mover-place') });
+  const select = el('select', '', { id: id('mover-place') });
   fillPlacePicker(select, leaves);
-  const move = el('button', 'Move here', { type: 'button', id: 'mover-go' });
-  const status = el('p', '', { id: 'mover-status', role: 'status' });
-  const warning = el('p', '', { id: 'mover-warning', role: 'alert' });
-  const anyway = el('button', 'Move anyway', { type: 'button', id: 'mover-anyway' });
+  const move = el('button', 'Move here', { type: 'button', id: id('mover-go') });
+  const status = el('p', '', { id: id('mover-status'), role: 'status' });
+  const warning = el('p', '', { id: id('mover-warning'), role: 'alert', class: 'mover-warning' });
+  const anyway = el('button', 'Move anyway', { type: 'button', id: id('mover-anyway') });
   anyway.hidden = true;
-  const cancel = el('button', 'Cancel', { type: 'button', id: 'mover-cancel', class: 'secondary' });
+  const cancel = el('button', 'Cancel', {
+    type: 'button',
+    id: id('mover-cancel'),
+    class: 'secondary',
+  });
   panel.append(heading, which, pickLabel, select, move, warning, anyway, status, cancel);
   let clip = null;
   let busy = false;

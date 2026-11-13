@@ -308,3 +308,18 @@ export function insideRows(inside, targetId, nodes = []) {
 export function suggestedLabel(placeName) {
   return ['Choose this place, ', name(placeName), ' (suggested)'];
 }
+
+/**
+ * The clip view's words (SPOOL-211): the same heading, state line, "Where it belongs" sentence and
+ * chain lead as the clip tag page, for the main page's Find a spool. `label` and `state` are the
+ * mover's clipLabel and stateLabel; `path` is pathTo(tree, clip.location_id).
+ */
+export function clipCardText(label, state, path) {
+  return {
+    heading: ['Clip: ', name(label)],
+    detail: `State: ${state}.`,
+    belongsHeading: 'Where it belongs',
+    place: clipPlaceText(path),
+    pathLead: 'Where that is:',
+  };
+}

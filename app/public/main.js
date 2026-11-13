@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Entry point: take the development token, then load the counts, the tree and the placement check.
 import { ApiError, setToken } from './api.js';
+import { setupFind } from './findspool.js';
 import { setupMove } from './movepage.js';
 import { setupPlacement } from './placement.js';
 import { setupStock } from './stock.js';
@@ -33,6 +34,8 @@ function clearResults() {
   if (summary) summary.hidden = true;
   const placement = document.getElementById('placement');
   if (placement) placement.hidden = true;
+  const find = document.getElementById('find-section');
+  if (find) find.hidden = true;
   const move = document.getElementById('move-section');
   if (move) move.hidden = true;
   const stock = document.getElementById('stock-section');
@@ -57,6 +60,7 @@ async function load() {
     const nodes = await showTree();
     await showSummary();
     await setupPlacement(nodes, fail);
+    await setupFind(nodes, fail, reloadTree);
     await setupMove(nodes, fail, reloadTree);
     await setupStock(nodes, fail, reloadTree);
     status.textContent = 'Loaded the location tree.';

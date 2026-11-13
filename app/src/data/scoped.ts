@@ -112,6 +112,12 @@ export interface ScopedData extends StockOps, ClaimOps {
   /** Clips stored at one place (at most 200), or null when the place does not exist. */
   clipsAt(locationId: string): Promise<ClipSummary[] | null>;
   /**
+   * Every clip of one filament (at most 200, in the order they were recorded), with or without a place:
+   * the non-NFC way to find where a spool belongs (SPOOL-211). Null when the filament does not exist in
+   * the caller's tenant, so an unknown and another tenant's filament look the same.
+   */
+  clipsOf(filamentId: string): Promise<ClipSummary[] | null>;
+  /**
    * Moves one clip to a place that holds units and records the move in the event log, atomically. A
    * hard limit asks for `confirm`; a soft limit and an unset capacity go through. Slots are loaded and
    * unloaded by the load workflow, not moved (SPOOL-84).
@@ -295,6 +301,19 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       const rows = await sql.all<ClipRow>(
         `${CLIP_SELECT} WHERE c.tenant_id = ? AND c.location_id = ? ORDER BY c.rowid LIMIT 200`,
         [tenantId, locationId],
+      );
+      return rows.map(toClip);
+    },
+    async clipsOf(filamentId) {
+      require(Scope.LocationsRead);
+      const filament = await sql.all<{ id: string }>(
+        'SELECT id FROM filament WHERE tenant_id = ? AND id = ?',
+        [tenantId, filamentId],
+      );
+      if (filament.length === 0) return null;
+      const rows = await sql.all<ClipRow>(
+        `${CLIP_SELECT} WHERE c.tenant_id = ? AND c.filament_id = ? ORDER BY c.rowid LIMIT 200`,
+        [tenantId, filamentId],
       );
       return rows.map(toClip);
     },

@@ -50,6 +50,14 @@ const HOME_TAG = 'SKQT00000004';
 const HOSTILE_PLACE = 'S3 "><img src=x id=injected onerror=window.__pwned=1>\u202Eevil';
 const HOSTILE_MAKER = '<script id=injected-s>window.__pwned=2</script>';
 const HOSTILE_COLOR = 'x" id="injected-a" onmouseover="window.__pwned=3';
+/** Find a spool (SPOOL-211): a filament whose clips are found without a tag, one per scheme to move. */
+const FIND_FILAMENT = '00000000-0000-4000-8000-000000000004';
+const FIND_CLIPS = {
+  light: { id: '00000000-0000-4000-8000-0000000000f1', tag: 'F00000000001' },
+  dark: { id: '00000000-0000-4000-8000-0000000000f2', tag: 'F00000000002' },
+  nowhere: { id: '00000000-0000-4000-8000-0000000000f3', tag: 'F00000000003' },
+  hostile: { id: '00000000-0000-4000-8000-0000000000f4', tag: 'F00000000004' },
+} as const;
 const TENANT = '3b1c0d1e-5a1e-4c63-9a0e-5b2a6f0c7d11';
 // A throwaway token for this scan only: it protects an in-memory database that lives for seconds.
 const CODE = 'A11Y01';
@@ -138,6 +146,21 @@ async function scanApp() {
   db.prepare(
     "INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, '00000000-0000-4000-8000-0000000000ee', ?, '00000000-0000-4000-8000-000000000003', 'loc2.shelf-4', 'on_spool')",
   ).run(TENANT, HOSTILE_CLIP_TAG);
+  // Find a spool (SPOOL-211): a filament with clips on two shelves, one with no place, one on the
+  // shelf with the hostile name. Nothing else in the scan uses this filament.
+  db.prepare(
+    "INSERT INTO filament (tenant_id, id, manufacturer, type, color, spool_kind) VALUES (?, ?, 'Find', 'PETG', 'Green', 'refillable')",
+  ).run(TENANT, FIND_FILAMENT);
+  for (const [clip, place, state] of [
+    [FIND_CLIPS.light, 'loc2.shelf-1', 'on_spool'],
+    [FIND_CLIPS.dark, 'loc2.shelf-2', 'on_spool'],
+    [FIND_CLIPS.nowhere, null, 'free'],
+    [FIND_CLIPS.hostile, 'loc3.shelf-3', 'on_spool'],
+  ] as const) {
+    db.prepare(
+      'INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(TENANT, clip.id, clip.tag, FIND_FILAMENT, place, state);
+  }
   // The real app with the real static handler, so the CSP header and module scripts are exercised.
   return createApp({
     auth: createDevTokenProvider({ token: SCAN_TOKEN, tenantId: TENANT }),
@@ -740,6 +763,171 @@ try {
       'a wrong code shows the neutral page',
     );
     violations += await axe(tab, `tap (${scheme}, wrong instance code)`);
+    await context.close();
+  }
+
+  // Find a spool (SPOOL-211): the main page's non-NFC way to the clip tag page's view, by taps only.
+  for (const scheme of ['light', 'dark'] as const) {
+    const context = await browser.newContext({
+      colorScheme: scheme,
+      viewport: { width: 375, height: 700 },
+    });
+    const tab = await context.newPage();
+    const mine = FIND_CLIPS[scheme];
+    const label = `find (${scheme}`;
+    // The clip tag page's view of this clip, to compare with the one reached without the tag.
+    await tab.goto(`${tapBase}/${CODE}${mine.tag}`);
+    await tab.fill('#token', SCAN_TOKEN);
+    await tab.click('#signin button[type=submit]');
+    await tab.locator('#clip-place').waitFor();
+    const tagView = await tab.evaluate(() => ({
+      heading: document.getElementById('tag-heading')?.textContent ?? '',
+      detail: document.getElementById('tag-detail')?.textContent ?? '',
+      belongs: document.querySelector('#tag-body h3')?.textContent ?? '',
+      place: document.getElementById('clip-place')?.textContent ?? '',
+      lead: document.querySelector('#tag-body .path-lead')?.textContent ?? '',
+      path: [...document.querySelectorAll('#tag-body ol.path li')].map((li) => li.textContent),
+      move: document.getElementById('pick-up')?.textContent ?? '',
+    }));
+    await tab.goto(`${tapBase}/`);
+    await tab.fill('#token', SCAN_TOKEN);
+    await tab.click('#token-form button[type=submit]');
+    await tab.locator('#find-section:not([hidden]) #find-mfr option[value="Find"]').waitFor({
+      state: 'attached',
+    });
+    // A filament with clips, chosen by tapping manufacturer, type and color.
+    await tab.selectOption('#find-mfr', 'Find');
+    await tab.selectOption('#find-type', 'PETG');
+    await tab.selectOption('#find-color', FIND_FILAMENT);
+    await tab.locator('#find-status:has-text("4 clips of Find PETG Green.")').waitFor();
+    const items = await tab.locator('#find-clips button').evaluateAll((bs) =>
+      bs.map((b) => ({
+        text: (b as HTMLElement).innerText,
+        label: b.getAttribute('aria-label'),
+        width: b.getBoundingClientRect().width,
+        height: b.getBoundingClientRect().height,
+      })),
+    );
+    // Each button is named by its own visible text (no aria-label), every name differs, and each
+    // target is at least 24 by 24 CSS pixels.
+    if (
+      items.length !== 4 ||
+      new Set(items.map((i) => i.text)).size !== 4 ||
+      items.some((i) => i.label !== null || i.width < 24 || i.height < 24)
+    ) {
+      console.error(`::error::${label}): the clip buttons are not distinct, named or large enough`);
+      violations += 1;
+    }
+    violations += expectText(
+      await tab.locator('#find-clips').innerText(),
+      'Clip 3: free (no spool), no place recorded',
+      'a clip with no place is listed and says so',
+    );
+    violations += expectText(
+      await tab.locator('#find-clips').innerText(),
+      'on a spool, at Active storage › Location 2 - Shelf 2',
+      'a clip in the list shows its state and its place',
+    );
+    violations += await noInjection(tab, `${label}, hostile place name)`, '"><img src=x');
+    violations += (await tab.locator('#find-clips bdi').count()) === 3 ? 0 : 1;
+    violations += await axe(tab, `${label}, filament chosen with clips)`);
+    violations += await reflow(tab, `${label}, 320px wide, text at 200%, filament with clips)`);
+    // Tap a clip: the clip tag page's view, with focus on its heading.
+    await tab.locator(`#find-clips button[data-clip="${mine.id}"]`).click();
+    await tab.locator('#find-clip:not([hidden])').waitFor();
+    const focused = await tab.evaluate(() => document.activeElement?.id ?? '');
+    if (focused !== 'find-clip-heading') {
+      console.error(`::error::${label}): opening a clip put focus on "${focused}"`);
+      violations += 1;
+    }
+    const findView = await tab.evaluate(() => ({
+      heading: document.getElementById('find-clip-heading')?.textContent ?? '',
+      detail: document.getElementById('find-clip-detail')?.textContent ?? '',
+      belongs: document.querySelector('#find-clip-body h4')?.textContent ?? '',
+      place: document.getElementById('find-clip-place')?.textContent ?? '',
+      lead: document.querySelector('#find-clip-body .path-lead')?.textContent ?? '',
+      path: [...document.querySelectorAll('#find-clip-body ol.path li')].map(
+        (li) => li.textContent,
+      ),
+      move: document.getElementById('find-pick-up')?.textContent ?? '',
+    }));
+    if (JSON.stringify(findView) !== JSON.stringify(tagView)) {
+      console.error(
+        `::error::${label}): the clip view differs from the tag page's: ${JSON.stringify(findView)} vs ${JSON.stringify(tagView)}`,
+      );
+      violations += 1;
+    }
+    violations += expectText(
+      findView.place,
+      `This clip belongs at Location 2 - Shelf ${scheme === 'light' ? '1' : '2'}.`,
+      'a clip found without its tag says where it belongs',
+    );
+    violations += await axe(tab, `${label}, clip with a place)`);
+    violations += await reflow(tab, `${label}, 320px wide, text at 200%, clip with a place)`);
+    // Back to the list: focus returns to the clip's own button.
+    await tab.click('#find-back');
+    const backTo = await tab.evaluate(() => document.activeElement?.getAttribute('data-clip'));
+    if (backTo !== mine.id) {
+      console.error(`::error::${label}): going back put focus on ${String(backTo)}`);
+      violations += 1;
+    }
+    // A clip with no place recorded.
+    await tab.locator(`#find-clips button[data-clip="${FIND_CLIPS.nowhere.id}"]`).click();
+    await tab.locator('#find-clip:not([hidden])').waitFor();
+    violations += expectText(
+      await tab.locator('#find-clip-place').innerText(),
+      'No place is recorded for this clip.',
+      'a clip with no place found without its tag says so',
+    );
+    violations += (await tab.locator('#find-clip-body ol.path').count()) === 0 ? 0 : 1;
+    violations += await axe(tab, `${label}, clip with no place)`);
+    await tab.click('#find-back');
+    // Move this clip, through the shared mover, from this path.
+    await tab.locator(`#find-clips button[data-clip="${mine.id}"]`).click();
+    await tab.click('#find-pick-up');
+    await tab.locator('#find-mover-go').waitFor();
+    violations += await axe(tab, `${label}, mover open)`);
+    violations += (await tab.locator('#find-status').innerText()).includes('Moved') ? 1 : 0;
+    await tab.selectOption('#find-mover-place', 'loc2.shelf-3');
+    await tab.click('#find-mover-go');
+    await tab.locator('#find-status:has-text("Moved.")').waitFor();
+    violations += expectText(
+      await tab.locator('#find-status').innerText(),
+      'Moved. Find PETG Green is now at Location 2 - Shelf 3 (Home, Active storage, Location 2).',
+      'after a move from Find a spool the page states the new place and its chain',
+    );
+    violations += expectText(
+      await tab.locator('#find-clip-place').innerText(),
+      'This clip belongs at Location 2 - Shelf 3.',
+      'after a move the clip view shows the new place',
+    );
+    violations += (await tab.locator('#find-mover-go').isVisible()) ? 1 : 0;
+    violations +=
+      (await tab.evaluate(() => document.activeElement?.id)) === 'find-clip-heading' ? 0 : 1;
+    violations += await axe(tab, `${label}, after a move)`);
+    violations += await reflow(tab, `${label}, 320px wide, text at 200%, after a move)`);
+    // A filament with no clips says so plainly.
+    await tab.selectOption('#find-mfr', 'Scan');
+    await tab.selectOption('#find-type', 'PETG');
+    await tab.selectOption('#find-color', '00000000-0000-4000-8000-000000000002');
+    await tab
+      .locator('#find-status:has-text("No clips of Scan PETG Blue are recorded.")')
+      .waitFor();
+    violations += expectText(
+      await tab.locator('#find-clips').innerText(),
+      'No clips of this filament are recorded.',
+      'a filament with no clips says so',
+    );
+    violations += await axe(tab, `${label}, filament with no clips)`);
+    // A filament with hostile names: literal text, nothing injected or run.
+    await tab.selectOption('#find-mfr', HOSTILE_MAKER);
+    await tab.selectOption('#find-type', 'PLA');
+    await tab.selectOption('#find-color', '00000000-0000-4000-8000-000000000003');
+    await tab.locator('#find-clips button').first().click();
+    await tab.locator('#find-clip:not([hidden])').waitFor();
+    violations += await noInjection(tab, `${label}, hostile filament name)`, HOSTILE_MAKER);
+    violations += (await tab.locator('#find-clip-heading bdi').count()) === 1 ? 0 : 1;
+    violations += await axe(tab, `${label}, hostile filament name)`);
     await context.close();
   }
 } finally {
