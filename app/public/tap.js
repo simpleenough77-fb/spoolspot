@@ -7,7 +7,8 @@
 // it for ten minutes. A place tag shows the place, its chain, its room and its clips; "Move <held clip>
 // here". A container tag lists the places inside with their room and the API's suggested place for the
 // held clip at the top. Every move ends on the shared mover's on-screen confirm; nothing moves on a bare
-// tap. "Choose a place instead" reaches the same place views without a tag.
+// tap. "Choose a place instead" reaches the same place views without a tag; a container chosen there
+// asks the API for the same suggestion its tag would give (SPOOL-210).
 import { ApiError, getJson, signIn } from './api.js';
 import {
   clipLabel,
@@ -19,13 +20,13 @@ import {
   stateLabel,
 } from './mover.js';
 import {
+  browsedView,
   clipPlaceText,
   findNode,
   heldInSlot,
   heldState,
   insideRows,
   isolatedText,
-  leavesUnder,
   movedText,
   name,
   partsText,
@@ -33,6 +34,7 @@ import {
   roomText,
   suggestedLabel,
   suggestionCopy,
+  suggestionsPath,
   takesClips,
   validView,
 } from './tapview.js';
@@ -141,7 +143,10 @@ let sequence = 0;
 
 let shownName = '';
 
-/** `quiet`: a choice from the place list; only the result is announced, not "Loading…". */
+/**
+ * `quiet`: a choice from the place list; only the result is announced, not "Loading…". Resolves to
+ * true when this call drew the card and is still the latest one, so only that call announces it.
+ */
 async function show(next = subject, { quiet = false } = {}) {
   subject = next;
   sequence += 1;
@@ -166,6 +171,12 @@ async function show(next = subject, { quiet = false } = {}) {
     const tree = await getJson('/api/v1/locations/tree');
     if (!validTree(tree)) throw new Error('unexpected data');
     nodes = tree.locations;
+    // A container chosen from the list: the same suggestion as its tag, for the same held clip.
+    const chosen = subject === TAG ? null : findNode(nodes, subject.place);
+    if (chosen && !chosen.leaf) {
+      view = browsedView(chosen, await getJson(suggestionsPath(chosen.id, held)), held);
+      if (view === null) throw new Error('unexpected data');
+    }
   } catch (error) {
     if (mine !== sequence) return;
     if (error instanceof ApiError && error.status === 401) {
@@ -173,6 +184,13 @@ async function show(next = subject, { quiet = false } = {}) {
       status.textContent = 'Sign in to see this tag.';
       signin.hidden = false;
       $('token').focus();
+    } else if (error instanceof ApiError && error.status === 404 && subject !== TAG && nodes) {
+      // Only the suggestion request of a chosen place answers 404. The fresh tree still had the place,
+      // so it changed between the two requests: nothing is shown and nothing stays selected.
+      card.hidden = true;
+      status.textContent = 'That place has just changed. Choose it again.';
+      fillBrowse(nodes);
+      browsePlace.value = '';
     } else if (error instanceof ApiError && error.status === 404) {
       neutral();
     } else if (error instanceof ApiError && error.status === 429) {
@@ -187,16 +205,14 @@ async function show(next = subject, { quiet = false } = {}) {
     return;
   }
   if (mine !== sequence) return; // a newer load has taken over
-  if (subject !== TAG) {
+  if (subject !== TAG && view === null) {
     const node = findNode(nodes, subject.place);
     if (!node) {
       status.textContent = 'That place is no longer in the list.';
       fillBrowse(nodes);
       return;
     }
-    view = node.leaf
-      ? { kind: 'location', location: node }
-      : { kind: 'container', location: node, inside: leavesUnder(node), suggestion: null };
+    view = { kind: 'location', location: node };
   }
   const mover = createMoverPanel(
     leafPaths(nodes),
@@ -222,7 +238,7 @@ async function show(next = subject, { quiet = false } = {}) {
   fillBrowse(nodes);
   if (view.kind === 'clip') {
     showClip(view.clip, nodes, mover);
-    return;
+    return mine === sequence;
   }
   const where = view.location;
   shownName = where.name;
@@ -231,8 +247,8 @@ async function show(next = subject, { quiet = false } = {}) {
   detail.textContent = roomText(findNode(nodes, where.id) ?? where);
   body.replaceChildren(...pathBlock(pathTo(nodes, where.id), 'Where this is:'));
   if (view.kind === 'container') {
-    showContainer(view, held, subject !== TAG, nodes, mover);
-    return;
+    showContainer(view, held, nodes, mover);
+    return mine === sequence;
   }
   if (held) {
     moveHeld.hidden = false;
@@ -242,6 +258,7 @@ async function show(next = subject, { quiet = false } = {}) {
     };
   }
   await listClips(where.id, mover, mine);
+  return mine === sequence;
 }
 
 let currentNodes = [];
@@ -293,8 +310,8 @@ function showClip(clip, nodes, mover) {
   };
 }
 
-function showContainer(view, held, browsed, nodes, mover) {
-  const copy = suggestionCopy(view, held, { browsed, inSlot: heldInSlot(held, nodes) });
+function showContainer(view, held, nodes, mover) {
+  const copy = suggestionCopy(view, held, { inSlot: heldInSlot(held, nodes) });
   // The clip this view was drawn for; a tap checks it is still the one held.
   const drawnFor = copy.canChoose && held ? held.id : null;
   const top = el('div', '', { id: 'suggestion', class: 'suggestion' });
@@ -395,8 +412,9 @@ browsePlace.addEventListener('change', () => {
   const id = browsePlace.value;
   // Focus stays on the list; the status line says only what is shown (no "Loading…" on each choice).
   // This runs on `change`, not `input`.
-  void show(id === '' ? TAG : { place: id }, { quiet: true }).then(() => {
-    if (!card.hidden && id !== '') say(['Showing ', name(shownName), '.']);
+  void show(id === '' ? TAG : { place: id }, { quiet: true }).then((drew) => {
+    // A choice overtaken by a later one says nothing: the later one announces what is shown.
+    if (drew === true && !card.hidden && id !== '') say(['Showing ', name(shownName), '.']);
   });
 });
 

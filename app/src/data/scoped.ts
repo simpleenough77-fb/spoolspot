@@ -87,6 +87,16 @@ export type TagView =
       held_clip_used: boolean;
     };
 
+/**
+ * The suggestion for a held clip inside one place (SPOOL-191, SPOOL-210): what a container tag shows,
+ * and what `placement-suggestions?within=&held=` answers. One implementation serves both.
+ */
+export interface HeldSuggestion {
+  suggestion: PlacementSuggestion | null;
+  /** Whether the held clip was found in this tenant and used for the ranking. */
+  held_clip_used: boolean;
+}
+
 export type MoveRefusal =
   | 'clip_not_found'
   | 'location_not_found'
@@ -132,6 +142,15 @@ export interface ScopedData extends StockOps, ClaimOps {
     type?: LocationType,
     within?: string,
   ): Promise<PlacementSuggestion[] | PlacementRefusal>;
+  /**
+   * The one place inside `within` a container tag would suggest for the held clip (SPOOL-210): the same
+   * function as tagView's. An unknown or other tenant's clip is ignored, exactly as if none was held;
+   * an unknown or other tenant's `within` is not_found, and then no clip is looked up.
+   */
+  heldClipSuggestion(
+    within: string,
+    heldClipId: string,
+  ): Promise<HeldSuggestion | PlacementRefusal>;
 }
 
 const TYPE_ORDER: readonly LocationType[] = [
@@ -220,6 +239,18 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       },
     };
   };
+  /**
+   * The suggestion inside `node` for the held clip, or for nothing held: the only path to
+   * containerSuggestion, shared by the container tag view and placement-suggestions?held= (SPOOL-210).
+   */
+  const suggestionInside = async (
+    tree: readonly LocationNode[],
+    node: LocationNode,
+    heldClipId: string | undefined,
+  ): Promise<HeldSuggestion> => {
+    const held = heldClipId === undefined ? null : await heldClipFor(heldClipId);
+    return { suggestion: containerSuggestion(tree, node, held), held_clip_used: held !== null };
+  };
   const requireWrite = (): void => {
     if (!hasScope(principal, Scope.InventoryWrite)) throw new ForbiddenError(Scope.InventoryWrite);
   };
@@ -278,14 +309,13 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       // preference on clip storage only, then most free); containerSuggestion then limits it by the held
       // clip's state, never offers a slot (even in a container of slots only), and offers nothing for
       // a clip sitting in a slot.
-      const held = heldClipId === undefined ? null : await heldClipFor(heldClipId);
-      const suggestion = containerSuggestion(tree, node, held);
+      const { suggestion, held_clip_used } = await suggestionInside(tree, node, heldClipId);
       return {
         kind: 'container',
         location: locationView(node),
         inside: leaves([node]).map(locationView),
         suggestion,
-        held_clip_used: held !== null,
+        held_clip_used,
       };
     },
     async clipsAt(locationId) {
@@ -380,6 +410,12 @@ export function createScopedData(sql: Sql, principal: Principal): ScopedData {
       if (within === undefined) return suggestPlacements(tree, count, type);
       const node = [...flatten(tree)].find((n) => n.id === within);
       return node ? suggestPlacements(tree, count, type, 5, node) : 'not_found';
+    },
+    async heldClipSuggestion(within, heldClipId) {
+      require(Scope.LocationsRead);
+      const tree = await loadTree();
+      const node = [...flatten(tree)].find((n) => n.id === within);
+      return node ? suggestionInside(tree, node, heldClipId) : 'not_found';
     },
     async locationSummary(): Promise<LocationSummary> {
       require(Scope.LocationsRead);
