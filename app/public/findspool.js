@@ -4,8 +4,11 @@
 // tap one to get the clip tag page's view: where it belongs, the chain of containers above that place,
 // and Move this clip through the shared mover. Wording comes from tapview.js and mover.js, so it is
 // the tag page's. Every value goes in with textContent; every name sits in its own <bdi>.
+// The card is never drawn from an old list: a tap on a clip, Move this clip and a refused move each
+// re-read the filament's clips first (the same GET), and main.js re-reads them after any move on the
+// page. Only the newest request may draw: an older answer is dropped.
 import { ApiError, getJson } from './api.js';
-import { clipLabel, createMoverPanel, holdClip, stateLabel } from './mover.js';
+import { clipLabel, createMoverPanel, holdClip, refusalMessage, stateLabel } from './mover.js';
 import { filamentLabel, isFilament } from './stock.js';
 import { clipCardText, movedText, name, pathTo } from './tapview.js';
 import { leafPaths } from './tree.js';
@@ -23,6 +26,11 @@ export function clipItemParts(clip, index, placeLabel) {
     ? [`${lead}, no place recorded`]
     : [`${lead}, at `, name(placeLabel ?? clip.location_id)];
 }
+
+export const GONE = 'That clip is no longer recorded here.';
+/** Said instead of a place when the clip's place is missing from this page's tree. */
+export const PLACE_NOT_LOADED =
+  'The place recorded for this clip is not in this page’s list of places. Reload the page to see it.';
 
 /** What the status line says once a filament's clips are listed. */
 export function listedParts(count, label) {
@@ -74,8 +82,17 @@ function fillSelect(select, values, placeholder) {
 }
 
 let controller = null;
+let active = null;
 
-export async function setupFind(nodes, onError, onChanged) {
+/**
+ * After any move on the main page (main.js reloadTree): take the fresh tree and, when a filament is
+ * chosen, re-read its clips and redraw the open card. No request when no filament is chosen.
+ */
+export async function refreshFind(nodes) {
+  await active?.(nodes);
+}
+
+export async function setupFind(initialNodes, onError, onChanged) {
   const $ = (id) => {
     const e = document.getElementById(id);
     if (!e) throw new Error(`missing #${id}`);
@@ -88,6 +105,7 @@ export async function setupFind(nodes, onError, onChanged) {
   const color = $('find-color');
   const status = $('find-status');
   const listBlock = $('find-list');
+  const listHeading = $('find-clips-heading');
   const list = $('find-clips');
   const card = $('find-clip');
   const heading = $('find-clip-heading');
@@ -100,9 +118,15 @@ export async function setupFind(nodes, onError, onChanged) {
   controller?.abort();
   controller = new AbortController();
   const { signal } = controller;
+  active = null;
 
-  const leaves = leafPaths(nodes);
-  const labels = new Map(leaves.map((p) => [p.id, p.label]));
+  let nodes = initialNodes;
+  let labels = new Map();
+  const takeTree = (next) => {
+    nodes = next;
+    labels = new Map(leafPaths(nodes).map((p) => [p.id, p.label]));
+  };
+  takeTree(initialNodes);
 
   const data = await getJson('/api/v1/filaments');
   if (!data || !Array.isArray(data.filaments) || !data.filaments.every(isFilament)) {
@@ -126,19 +150,14 @@ export async function setupFind(nodes, onError, onChanged) {
   let shown = null;
   let sequence = 0;
 
-  const closeCard = () => {
-    card.hidden = true;
-    mover.element.hidden = true;
-    shown = null;
-  };
-
   const mover = createMoverPanel(
-    leaves,
+    leafPaths(initialNodes),
     (result) => {
-      // The mover said "Moved." in its own panel; close it and say where the clip is now, once.
+      // The mover said "Moved." in its own panel; close it, let the page reload (which re-reads this
+      // filament's clips and redraws the card), then say where the clip is now, once.
       mover.element.hidden = true;
-      void onChanged();
-      void loadClips({ keepCard: result.clip.id }).then(() => {
+      void Promise.resolve(onChanged()).then(() => {
+        if (shown?.id !== result.clip.id || card.hidden) return;
         say(
           result.moved
             ? movedText(clipLabel(result.clip), pathTo(nodes, result.clip.location_id))
@@ -150,8 +169,24 @@ export async function setupFind(nodes, onError, onChanged) {
     {
       idPrefix: 'find-',
       headingTag: 'h3',
+      headingText: 'Move this clip',
       onClose: () => {
         pickUp.focus();
+      },
+      onRefused: (error) => {
+        const code = error instanceof ApiError ? error.body?.error : undefined;
+        if (code !== 'not_found' && code !== 'location_not_found' && code !== 'conflict') return;
+        // The clip or a place changed: re-read, keep the mover and its refusal on screen.
+        const id = shown?.id;
+        void load().then((ok) => {
+          if (!ok || id === undefined) return;
+          const fresh = clips.find((c) => c.id === id);
+          if (fresh) {
+            showCard(fresh, { keepMover: true });
+          } else {
+            gone([refusalMessage(error), ' ', GONE]);
+          }
+        });
       },
     },
   );
@@ -169,66 +204,85 @@ export async function setupFind(nodes, onError, onChanged) {
     return [intro, ol];
   };
 
-  function showCard(clip) {
+  function closeCard() {
+    card.hidden = true;
+    mover.element.hidden = true;
+    shown = null;
+  }
+
+  /** The clip tag page's view of `clip`, which must come from the newest answer. */
+  function showCard(clip, { keepMover = false } = {}) {
     shown = clip;
     const label = clipLabel(clip);
     const path = pathTo(nodes, clip.location_id);
     const text = clipCardText(label, stateLabel(clip.state), path);
+    // A place the page's tree does not have yet: never say "no place" for a clip that has one.
+    const place = clip.location_id !== null && path.length === 0 ? [PLACE_NOT_LOADED] : text.place;
     heading.replaceChildren(...partNodes(text.heading));
     detail.textContent = text.detail;
     body.replaceChildren(
       el('h4', text.belongsHeading),
-      sentence('p', text.place, { id: 'find-clip-place' }),
+      sentence('p', place, { id: 'find-clip-place' }),
       ...pathBlock(path, text.pathLead),
     );
-    mover.element.hidden = true;
+    if (!keepMover) mover.element.hidden = true;
     listBlock.hidden = true;
     card.hidden = false;
   }
 
-  function renderList(label) {
+  /** The clip is not in the newest answer: back to the list, said once, focus on the list heading. */
+  function gone(parts = [GONE]) {
+    closeCard();
+    listBlock.hidden = false;
+    say(parts);
+    listHeading.focus();
+  }
+
+  function renderList() {
+    const focusedClip = document.activeElement?.getAttribute('data-clip') ?? null;
     list.replaceChildren();
     clips.forEach((c, i) => {
       const li = el('li');
       const button = el('button', '', { type: 'button', 'data-clip': c.id });
       button.replaceChildren(...partNodes(clipItemParts(c, i, labels.get(c.location_id ?? ''))));
       button.addEventListener('click', () => {
-        say([]);
-        showCard(c);
-        heading.focus();
+        void openClip(c.id);
       });
       li.append(button);
       list.append(li);
     });
     if (clips.length === 0) list.append(el('li', 'No clips of this filament are recorded.'));
-    listBlock.hidden = false;
-    return listedParts(clips.length, label);
+    // A refresh must not drop focus that was on a clip's button.
+    if (focusedClip !== null) {
+      [...list.querySelectorAll('button')]
+        .find((b) => b.getAttribute('data-clip') === focusedClip)
+        ?.focus();
+    }
   }
 
   const chosen = () => filaments.find((f) => f.id === color.value);
 
-  /** Loads the chosen filament's clips. `keepCard`: after a move, show that clip's view again. */
-  async function loadClips({ keepCard = null } = {}) {
+  /**
+   * Re-reads the chosen filament's clips and redraws the list. Resolves true when this answer is the
+   * newest one and was drawn; false when no filament is chosen, a newer request took over, or it
+   * failed (the failure is said on the status line).
+   */
+  async function load() {
     sequence += 1;
     const mine = sequence;
     const f = chosen();
-    if (!f) return;
+    if (!f) return false;
     try {
       const result = await getJson(`/api/v1/filaments/${encodeURIComponent(f.id)}/clips`);
       if (!result || !Array.isArray(result.clips) || !result.clips.every(isClip)) {
         throw new Error('unexpected data');
       }
-      if (mine !== sequence || signal.aborted) return; // a newer choice has taken over
+      if (mine !== sequence || signal.aborted) return false; // a newer request has taken over
       clips = result.clips;
-      const listed = renderList(filamentLabel(f));
-      const again = keepCard === null ? undefined : clips.find((c) => c.id === keepCard);
-      if (again) {
-        showCard(again);
-      } else {
-        say(listed);
-      }
+      renderList();
+      return true;
     } catch (error) {
-      if (mine !== sequence) return;
+      if (mine !== sequence || signal.aborted) return false;
       if (error instanceof ApiError && error.status !== 401) {
         say([
           error.status === 404
@@ -238,7 +292,21 @@ export async function setupFind(nodes, onError, onChanged) {
       } else {
         onError(error);
       }
+      return false;
     }
+  }
+
+  /** A tap on a clip: re-read first, then draw the card from the fresh answer. */
+  async function openClip(id) {
+    say([]);
+    if (!(await load())) return;
+    const fresh = clips.find((c) => c.id === id);
+    if (!fresh) {
+      gone();
+      return;
+    }
+    showCard(fresh);
+    heading.focus();
   }
 
   const reset = () => {
@@ -292,18 +360,35 @@ export async function setupFind(nodes, onError, onChanged) {
     'change',
     () => {
       reset();
-      void loadClips();
+      const f = chosen();
+      void load().then((ok) => {
+        if (ok && f) {
+          listBlock.hidden = false;
+          say(listedParts(clips.length, filamentLabel(f)));
+        }
+      });
     },
     { signal },
   );
 
   pickUp.onclick = () => {
-    if (!shown) return;
-    const held = { id: shown.id, label: clipLabel(shown) };
+    const id = shown?.id;
+    if (id === undefined) return;
     // As on the clip tag page: held for ten minutes, so tapping a place tag next offers "Move here".
-    holdClip(held.id, held.label, shown.location_id);
-    say(['Held for ten minutes. Tap a place tag, or choose a place below.']);
-    mover.show(held, shown.location_id ?? undefined);
+    // Re-read first, so the held clip carries its place as it is now.
+    void load().then((ok) => {
+      if (!ok) return;
+      const fresh = clips.find((c) => c.id === id);
+      if (!fresh) {
+        gone();
+        return;
+      }
+      showCard(fresh);
+      const held = { id: fresh.id, label: clipLabel(fresh) };
+      holdClip(held.id, held.label, fresh.location_id);
+      say(['Held for ten minutes. Tap a place tag, or choose a place below.']);
+      mover.show(held, fresh.location_id ?? undefined);
+    });
   };
   back.onclick = () => {
     const was = shown;
@@ -313,7 +398,19 @@ export async function setupFind(nodes, onError, onChanged) {
     const button = [...list.querySelectorAll('button')].find(
       (b) => b.getAttribute('data-clip') === was?.id,
     );
-    (button ?? $('find-clips-heading')).focus();
+    (button ?? listHeading).focus();
+  };
+
+  active = async (next) => {
+    takeTree(next);
+    if (!chosen()) return; // nothing chosen: no request
+    const openId = card.hidden ? null : (shown?.id ?? null);
+    const moverOpen = !mover.element.hidden;
+    if (!(await load())) return;
+    if (openId === null) return;
+    const fresh = clips.find((c) => c.id === openId);
+    if (fresh) showCard(fresh, { keepMover: moverOpen });
+    else gone();
   };
 
   reset();

@@ -119,6 +119,8 @@ export async function requestMove(clipId, to, confirm, ui) {
       return null;
     }
     ui.status.textContent = refusalMessage(error);
+    // The refusal stays on screen; the page may reload what it shows (SPOOL-211).
+    ui.onRefused?.(error);
     return null;
   }
 }
@@ -153,12 +155,12 @@ function el(tag, text, attrs = {}) {
  * `leaves` come from leafPaths(). `onMoved(result)` runs after a successful move.
  */
 export function createMoverPanel(leaves, onMoved, hooks = {}) {
-  // A second panel on the same page (SPOOL-211) takes an id prefix and a heading level; the defaults
-  // keep the ids and the h2 the pages had before.
+  // A second panel on the same page (SPOOL-211) takes an id prefix, a heading level and heading text;
+  // the defaults keep the ids, the h2 and the "Move a clip" heading the pages had before.
   const id = (base) => `${hooks.idPrefix ?? ''}${base}`;
   const panel = el('section', '', { 'aria-labelledby': id('mover-heading') });
   panel.hidden = true;
-  const heading = el(hooks.headingTag ?? 'h2', 'Move a clip', {
+  const heading = el(hooks.headingTag ?? 'h2', hooks.headingText ?? 'Move a clip', {
     id: id('mover-heading'),
     tabindex: '-1',
   });
@@ -195,6 +197,7 @@ export function createMoverPanel(leaves, onMoved, hooks = {}) {
         warning,
         confirmButton: anyway,
         onUnauthorized: hooks.onUnauthorized,
+        onRefused: hooks.onRefused,
       });
       pendingTo = anyway.hidden ? null : select.value;
       if (result) {

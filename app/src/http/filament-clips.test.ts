@@ -3,7 +3,7 @@
 // non-NFC way to find where a spool belongs: every clip of one filament, with or without a place.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDevTokenProvider } from '../auth/dev-token.ts';
-import { Scope } from '../auth/principal.ts';
+import { ForbiddenError, Scope } from '../auth/principal.ts';
 import { createScopedData } from '../data/scoped.ts';
 import { importSeed } from '../seed/import.ts';
 import {
@@ -79,7 +79,37 @@ async function setup() {
     a.request(`http://localhost${path}`, { headers: { host: 'localhost', ...headers } });
   const clipsOf = async (id: string, a = app): Promise<Clip[]> =>
     ((await (await call(`/api/v1/filaments/${id}/clips`, a)).json()) as { clips: Clip[] }).clips;
-  return { db, app, as, call, clip, clipsOf, shared, onlyB, empty, a1, a2, a3, bClip };
+  // Every data-layer method the handler touches, by name, to show a refusal makes no lookup at all.
+  const dataCalls: string[] = [];
+  const counted = createApp({
+    auth: createDevTokenProvider({ token: TEST_TOKEN, tenantId: TENANT_A }),
+    data: (p) =>
+      new Proxy(createScopedData(sql, p), {
+        get(target, key, receiver) {
+          dataCalls.push(String(key));
+          return Reflect.get(target, key, receiver) as unknown;
+        },
+      }),
+    allowedHosts: ['localhost'],
+  });
+  return {
+    db,
+    sql,
+    app,
+    as,
+    call,
+    clip,
+    clipsOf,
+    counted,
+    dataCalls,
+    shared,
+    onlyB,
+    empty,
+    a1,
+    a2,
+    a3,
+    bClip,
+  };
 }
 
 /** Status, every header and the body, as one comparable string. */
@@ -178,6 +208,32 @@ describe('GET /api/v1/filaments/:id/clips (SPOOL-211)', () => {
       expect(res.status, bad).toBe(400);
       expect(await res.json()).toEqual({ error: 'invalid_request' });
     }
+  });
+
+  it('makes no data lookup at all for a malformed id', async () => {
+    const { call, counted, dataCalls, shared } = await setup();
+    for (const bad of ['not-a-uuid', 'ABCDEF00-0000-4000-8000-000000000001', `${shared}0`]) {
+      expect((await call(`/api/v1/filaments/${bad}/clips`, counted)).status).toBe(400);
+    }
+    expect(dataCalls).toEqual([]);
+    // The same counter does see a well-formed id reach the data layer.
+    expect((await call(`/api/v1/filaments/${shared}/clips`, counted)).status).toBe(200);
+    expect(dataCalls).toEqual(['clipsOf']);
+  });
+
+  it('refuses a principal without the read scope in the data layer too', async () => {
+    const { sql, shared } = await setup();
+    const principal = (scopes: string[]) => ({
+      subject: 's',
+      tenantId: TENANT_A,
+      scopes: new Set(scopes),
+    });
+    await expect(createScopedData(sql, principal([])).clipsOf(shared)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    await expect(
+      createScopedData(sql, principal([Scope.InventoryWrite])).clipsOf(shared),
+    ).rejects.toThrow(/missing scope/);
   });
 
   it('returns at most 200 clips, the first 200 recorded, in a stable order', async () => {

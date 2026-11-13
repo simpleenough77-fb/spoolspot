@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Entry point: take the development token, then load the counts, the tree and the placement check.
 import { ApiError, setToken } from './api.js';
-import { setupFind } from './findspool.js';
+import { refreshFind, setupFind } from './findspool.js';
 import { setupMove } from './movepage.js';
 import { setupPlacement } from './placement.js';
 import { setupStock } from './stock.js';
@@ -42,12 +42,15 @@ function clearResults() {
   if (stock) stock.hidden = true;
 }
 
-// After a move, refresh the tree and the placement answer but keep the move section as it is.
+// After a move, refresh the tree and the placement answer but keep the move section as it is. Find a
+// spool re-reads its chosen filament's clips (no request when none is chosen), so it never shows a
+// place from before the move.
 async function reloadTree() {
   try {
     const nodes = await showTree();
     await showSummary();
     await setupPlacement(nodes, fail);
+    await refreshFind(nodes);
   } catch (error) {
     fail(error);
   }
