@@ -141,6 +141,10 @@ describe('Find a spool: the list (findspool.js)', () => {
     expect(T(find.clipItemParts(clip({ location_id: null, state: 'free' }), 1))).toBe(
       'Clip 2: free (no spool), no place recorded',
     );
+    // A place missing from the page's tree: words, never the raw id.
+    const missing = find.clipItemParts(clip({ location_id: 'loc2.shelf-9' }), 4);
+    expect(T(missing)).toBe('Clip 5: on a spool, at a place not in this page’s list of places');
+    expect(T(missing)).not.toContain('loc2.shelf-9');
     // Two clips with the same state at the same place still read differently.
     expect(T(find.clipItemParts(clip(), 2, 'Shelf'))).not.toBe(
       T(find.clipItemParts(clip(), 3, 'Shelf')),

@@ -24,10 +24,14 @@ export function clipItemParts(clip, index, placeLabel) {
   const lead = `Clip ${String(index + 1)}: ${stateLabel(clip.state)}`;
   return clip.location_id === null
     ? [`${lead}, no place recorded`]
-    : [`${lead}, at `, name(placeLabel ?? clip.location_id)];
+    : placeLabel === undefined
+      ? [`${lead}, at ${PLACE_NOT_LISTED}`]
+      : [`${lead}, at `, name(placeLabel)];
 }
 
 export const GONE = 'That clip is no longer recorded here.';
+/** A list row whose place is missing from this page's tree: never a raw id on screen. */
+export const PLACE_NOT_LISTED = 'a place not in this page’s list of places';
 /** Said instead of a place when the clip's place is missing from this page's tree. */
 export const PLACE_NOT_LOADED =
   'The place recorded for this clip is not in this page’s list of places. Reload the page to see it.';
@@ -149,6 +153,12 @@ export async function setupFind(initialNodes, onError, onChanged) {
   let clips = [];
   let shown = null;
   let sequence = 0;
+  // A clip tapped whose answer has not been drawn yet; a refresh that supersedes the tap opens it.
+  let pendingOpen = null;
+  // Set while this section's own move reloads the page, so a clip gone after it is said here.
+  let ownMove = false;
+  /** Whether the card for clip `id` is still the one open (the person did not go Back meanwhile). */
+  const stillOpen = (id) => id !== undefined && !card.hidden && shown?.id === id;
 
   const mover = createMoverPanel(
     leafPaths(initialNodes),
@@ -156,8 +166,10 @@ export async function setupFind(initialNodes, onError, onChanged) {
       // The mover said "Moved." in its own panel; close it, let the page reload (which re-reads this
       // filament's clips and redraws the card), then say where the clip is now, once.
       mover.element.hidden = true;
+      ownMove = true;
       void Promise.resolve(onChanged()).then(() => {
-        if (shown?.id !== result.clip.id || card.hidden) return;
+        ownMove = false;
+        if (!stillOpen(result.clip.id)) return;
         say(
           result.moved
             ? movedText(clipLabel(result.clip), pathTo(nodes, result.clip.location_id))
@@ -179,7 +191,8 @@ export async function setupFind(initialNodes, onError, onChanged) {
         // The clip or a place changed: re-read, keep the mover and its refusal on screen.
         const id = shown?.id;
         void load().then((ok) => {
-          if (!ok || id === undefined) return;
+          // Back (or anything else) since the refusal: draw nothing.
+          if (ok !== true || !stillOpen(id)) return;
           const fresh = clips.find((c) => c.id === id);
           if (fresh) {
             showCard(fresh, { keepMover: true });
@@ -205,6 +218,8 @@ export async function setupFind(initialNodes, onError, onChanged) {
   };
 
   function closeCard() {
+    // Closing the card invalidates every answer still in flight for it.
+    sequence += 1;
     card.hidden = true;
     mover.element.hidden = true;
     shown = null;
@@ -264,8 +279,8 @@ export async function setupFind(initialNodes, onError, onChanged) {
 
   /**
    * Re-reads the chosen filament's clips and redraws the list. Resolves true when this answer is the
-   * newest one and was drawn; false when no filament is chosen, a newer request took over, or it
-   * failed (the failure is said on the status line).
+   * newest one and was drawn; null when a newer request (or closing the card) took over; false when
+   * no filament is chosen or it failed (the failure is said on the status line).
    */
   async function load() {
     sequence += 1;
@@ -277,12 +292,12 @@ export async function setupFind(initialNodes, onError, onChanged) {
       if (!result || !Array.isArray(result.clips) || !result.clips.every(isClip)) {
         throw new Error('unexpected data');
       }
-      if (mine !== sequence || signal.aborted) return false; // a newer request has taken over
+      if (mine !== sequence || signal.aborted) return null; // a newer request has taken over
       clips = result.clips;
       renderList();
       return true;
     } catch (error) {
-      if (mine !== sequence || signal.aborted) return false;
+      if (mine !== sequence || signal.aborted) return null;
       if (error instanceof ApiError && error.status !== 401) {
         say([
           error.status === 404
@@ -299,7 +314,18 @@ export async function setupFind(initialNodes, onError, onChanged) {
   /** A tap on a clip: re-read first, then draw the card from the fresh answer. */
   async function openClip(id) {
     say([]);
-    if (!(await load())) return;
+    pendingOpen = id;
+    const ok = await load();
+    // Superseded (null): a refresh that took over opens it; anything else cancels it.
+    if (ok === false) pendingOpen = null;
+    if (ok !== true || pendingOpen !== id) return;
+    drawPending();
+  }
+
+  /** Opens the tapped clip from the answer just drawn, or says it is gone. */
+  function drawPending() {
+    const id = pendingOpen;
+    pendingOpen = null;
     const fresh = clips.find((c) => c.id === id);
     if (!fresh) {
       gone();
@@ -311,6 +337,7 @@ export async function setupFind(initialNodes, onError, onChanged) {
 
   const reset = () => {
     sequence += 1;
+    pendingOpen = null;
     closeCard();
     listBlock.hidden = true;
     list.replaceChildren();
@@ -377,7 +404,8 @@ export async function setupFind(initialNodes, onError, onChanged) {
     // As on the clip tag page: held for ten minutes, so tapping a place tag next offers "Move here".
     // Re-read first, so the held clip carries its place as it is now.
     void load().then((ok) => {
-      if (!ok) return;
+      // Back since the tap: hold nothing, open nothing.
+      if (ok !== true || !stillOpen(id)) return;
       const fresh = clips.find((c) => c.id === id);
       if (!fresh) {
         gone();
@@ -404,13 +432,25 @@ export async function setupFind(initialNodes, onError, onChanged) {
   active = async (next) => {
     takeTree(next);
     if (!chosen()) return; // nothing chosen: no request
-    const openId = card.hidden ? null : (shown?.id ?? null);
+    const openId = card.hidden ? undefined : shown?.id;
     const moverOpen = !mover.element.hidden;
-    if (!(await load())) return;
-    if (openId === null) return;
+    if ((await load()) !== true) return;
+    if (pendingOpen !== null) {
+      // A tap this refresh superseded: open it now, as the tap would have.
+      drawPending();
+      return;
+    }
+    if (openId === undefined || !stillOpen(openId)) return; // no card, or Back meanwhile
     const fresh = clips.find((c) => c.id === openId);
-    if (fresh) showCard(fresh, { keepMover: moverOpen });
-    else gone();
+    if (fresh) {
+      showCard(fresh, { keepMover: moverOpen });
+    } else if (ownMove || section.contains(document.activeElement)) {
+      gone();
+    } else {
+      // Someone working in another section: close the card quietly, say nothing, keep their focus.
+      closeCard();
+      listBlock.hidden = false;
+    }
   };
 
   reset();

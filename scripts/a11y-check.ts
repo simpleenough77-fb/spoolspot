@@ -58,6 +58,7 @@ const FIND_CLIPS = {
   nowhere: { id: '00000000-0000-4000-8000-0000000000f3', tag: 'F00000000003' },
   hostile: { id: '00000000-0000-4000-8000-0000000000f4', tag: 'F00000000004' },
 } as const;
+const GONE_TEXT = 'That clip is no longer recorded here.';
 const TENANT = '3b1c0d1e-5a1e-4c63-9a0e-5b2a6f0c7d11';
 // A throwaway token for this scan only: it protects an in-memory database that lives for seconds.
 const CODE = 'A11Y01';
@@ -1127,9 +1128,23 @@ try {
     await tab.click('#find-back');
     await said();
 
-    // Move this clip from this path: the held clip carries the place as read now.
+    // Move this clip from this path: the held clip carries the place as read now. The card shows
+    // Location 3 - Shelf 1, then the clip is moved elsewhere before "Move this clip" is tapped.
     await tab.locator(`#find-clips button[data-clip="${mine.id}"]`).click();
     await tab.locator('#find-clip:not([hidden])').waitFor();
+    const movedAgain = await tab.evaluate(async (id) => {
+      const r = await fetch(`/api/v1/clips/${id}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: 'loc3.shelf-2', confirm: false }),
+        cache: 'no-store',
+      });
+      return r.status;
+    }, mine.id);
+    violations += check(
+      movedAgain === 200,
+      `the second "other tab" move answered ${String(movedAgain)}`,
+    );
     await tab.click('#find-pick-up');
     await tab.locator('#find-mover-go').waitFor();
     const heldFrom = await tab.evaluate(() => {
@@ -1137,8 +1152,13 @@ try {
       return raw ? (JSON.parse(raw) as { from: string | null }).from : 'none';
     });
     violations += check(
-      heldFrom === 'loc3.shelf-1',
-      `the held clip carries the place "${String(heldFrom)}", not loc3.shelf-1`,
+      heldFrom === 'loc3.shelf-2',
+      `the held clip carries the place "${String(heldFrom)}", not loc3.shelf-2 (read now)`,
+    );
+    violations += expectText(
+      await tab.locator('#find-clip-place').innerText(),
+      'This clip belongs at Location 3 - Shelf 2.',
+      'Move this clip redraws the card from the place read now',
     );
     violations += await saidOnce(
       'Held for ten minutes. Tap a place tag, or choose a place below.',
@@ -1198,6 +1218,141 @@ try {
     violations += await axe(tab, `${label}, after a move)`);
     violations += await reflow(tab, `${label}, 320px wide, text at 200%, after a move)`);
 
+    // Answers that land after the person went Back, or that a refresh supersedes (round 2).
+    const listUrlEnd = `/api/v1/filaments/${FIND_FILAMENT}/clips`;
+    const listAsked = () => tab.waitForRequest((r) => r.url().endsWith(listUrlEnd));
+    /** A move in "Move a clip" to where the clip already is: changes nothing, reloads the page. */
+    const sameMove = async () => {
+      await tab.selectOption('#move-from', 'loc1.shelf-2');
+      await tab.locator('#move-clips li button').first().click();
+      const done = tab.waitForResponse((r) => r.url().endsWith('/move'));
+      await tab.click('#mover-go');
+      await done;
+    };
+    const heldRaw = () => tab.evaluate(() => localStorage.getItem('spoolspot.held-clip'));
+    const focusClip = () => tab.evaluate(() => document.activeElement?.getAttribute('data-clip'));
+    const openMine = async () => {
+      await tab.locator(`#find-clips button[data-clip="${mine.id}"]`).click();
+      await tab.locator('#find-clip:not([hidden])').waitFor();
+    };
+    /** After Back: the card stays closed, focus stays on the clip's button, nothing is announced. */
+    const stayedBack = async (what: string): Promise<number> => {
+      await tab.waitForTimeout(500);
+      let bad = check(!(await tab.locator('#find-clip').isVisible()), `${what}: the card reopened`);
+      bad += check(!(await tab.locator('#find-mover-go').isVisible()), `${what}: the mover opened`);
+      const at = await focusClip();
+      bad += check(at === mine.id, `${what}: focus moved to ${String(at)}, not the clip's button`);
+      const extra = await said();
+      bad += check(extra.length === 0, `${what}: announced ${JSON.stringify(extra)}`);
+      return bad;
+    };
+    // 1. A refused move re-reads; Back before the answer: nothing reopens.
+    await tab.click('#find-back');
+    await said();
+    await openMine();
+    await tab.click('#find-pick-up');
+    await tab.locator('#find-mover-go').waitFor();
+    await tab.route(moveUrl, (route) =>
+      route.fulfill({ status: 409, json: { error: 'conflict' } }),
+    );
+    await said();
+    release = await holdList();
+    let asked = listAsked();
+    await tab.click('#find-mover-go');
+    await asked;
+    await tab.click('#find-back');
+    release();
+    violations += await stayedBack('refused move, then Back');
+    await tab.unroute(findList);
+    await tab.unroute(moveUrl);
+    // 2. A refresh (a move in "Move a clip") while the card is open; Back before its answer.
+    await openMine();
+    release = await holdList();
+    asked = listAsked();
+    await sameMove();
+    await asked;
+    await tab.click('#find-back');
+    release();
+    violations += await stayedBack('refresh, then Back');
+    await tab.unroute(findList);
+    // 3. "Move this clip" re-reads; Back before the answer: nothing is held, the mover stays shut.
+    await openMine();
+    const heldBefore = await heldRaw();
+    release = await holdList();
+    asked = listAsked();
+    await tab.click('#find-pick-up');
+    await asked;
+    await tab.click('#find-back');
+    release();
+    violations += await stayedBack('Move this clip, then Back');
+    violations += check(
+      (await heldRaw()) === heldBefore,
+      'Move this clip, then Back: the clip was held anyway',
+    );
+    await tab.unroute(findList);
+    // A tap superseded by a refresh: the refresh's answer opens the tapped clip.
+    release = await holdList();
+    asked = listAsked();
+    await tab.locator(`#find-clips button[data-clip="${mine.id}"]`).click();
+    await asked;
+    asked = listAsked();
+    await sameMove();
+    await asked;
+    release();
+    await tab
+      .locator('#find-clip:not([hidden])')
+      .waitFor({ timeout: 5000 })
+      .catch(() => undefined);
+    await tab.unroute(findList);
+    violations += check(
+      (await tab.locator('#find-clip').isVisible()) &&
+        (await tab.locator('#find-clip-heading').innerText()) === 'Clip: Find PETG Green' &&
+        (await tab.evaluate(() => document.activeElement?.id)) === 'find-clip-heading',
+      'a tap superseded by a refresh did not open the tapped clip with focus on its heading',
+    );
+    await said();
+    // The open clip gone after a refresh caused elsewhere: closed quietly, focus left where it was.
+    const dropMine = async () => {
+      await tab.route(findList, async (route) => {
+        const response = await route.fetch();
+        const body = (await response.json()) as { clips: { id: string }[] };
+        await route.fulfill({
+          response,
+          json: { clips: body.clips.filter((c) => c.id !== mine.id) },
+        });
+      });
+    };
+    await dropMine();
+    await sameMove();
+    await tab.locator('#find-clip').waitFor({ state: 'hidden' });
+    await tab.unroute(findList);
+    const quietFocus = await tab.evaluate(() => document.activeElement?.id ?? '');
+    violations += check(
+      quietFocus === 'move-note',
+      `a quiet close moved focus to "${quietFocus}" away from "Move a clip"`,
+    );
+    const quiet = await said();
+    violations += check(quiet.length === 0, `a quiet close announced ${JSON.stringify(quiet)}`);
+    // The open clip gone after this section's own move: said once, focus on the list heading.
+    await tab.locator(`#find-clips button[data-clip="${FIND_CLIPS.nowhere.id}"]`).click();
+    await tab.locator('#find-clip:not([hidden])').waitFor();
+    await tab.click('#find-back');
+    await openMine();
+    await tab.click('#find-pick-up');
+    await tab.locator('#find-mover-go').waitFor();
+    await said();
+    await dropMine();
+    await tab.selectOption('#find-mover-place', 'loc2.shelf-4');
+    await tab.click('#find-mover-go');
+    await tab.locator(`#find-status:has-text("${GONE_TEXT}")`).waitFor();
+    await tab.unroute(findList);
+    violations += await saidOnce(GONE_TEXT, 'the clip gone after this section’s own move');
+    const ownFocus = await tab.evaluate(() => document.activeElement?.id ?? '');
+    violations += check(
+      ownFocus === 'find-clips-heading',
+      `the clip gone after this section's own move put focus on "${ownFocus}"`,
+    );
+
     // A filament with no clips says so plainly.
     await tab.selectOption('#find-mfr', 'Scan');
     await tab.selectOption('#find-type', 'PETG');
@@ -1237,5 +1392,5 @@ try {
 
 if (violations > 0) process.exit(1);
 console.log(
-  `${String(pages.length)} page(s), the loaded tree and placement states, the move section, boxed stock, the tag page states including a container tag, and the Find a spool states (filament with and without clips, clip with and without a place, moved here, elsewhere and from Find, no longer recorded, refused move, out-of-order answers) (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
+  `${String(pages.length)} page(s), the loaded tree and placement states, the move section, boxed stock, the tag page states including a container tag, and the Find a spool states (filament with and without clips, clip with and without a place, moved here, elsewhere and from Find, no longer recorded, refused move, out-of-order answers, answers after Back, a tap superseded by a refresh, a quiet close) (light and dark) passed the axe-core WCAG 2.2 A/AA scan.`,
 );
