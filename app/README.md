@@ -39,7 +39,7 @@ Failed sign-ins are rate limited per connecting address (10 a minute); after tha
 
 Opening a tag link shows what the tag stands for. First visit: paste the development token once; it is traded for a session cookie and forgotten by the page. A clip tag shows the filament, its state and where it is now, with **Move this clip** (held for ten minutes). A place tag shows used and free, lists the clips there, and offers **Move <held clip> here** when one is held. Every move ends on an on-screen **Move here** tap; past a hard limit the page warns and asks again with **Move anyway**. A soft limit goes through.
 
-Without NFC the same move is on the main page (**Move a clip**): pick the place the clip is in, tap the clip, pick the destination. Unknown, malformed and other-instance tags all show the same neutral message.
+Without NFC the same move is on the main page (**Move a clip**): pick the place the clip is in, tap the clip, pick the destination. To find where a spool belongs without its tag, use **Find a spool** on the main page: choose the filament's manufacturer, type and color, then tap one of its clips (each says its state and its place, or "no place recorded"). The clip view is the tag page's: where it belongs, the chain of containers above that place, and **Move this clip**. Unknown, malformed and other-instance tags all show the same neutral message.
 
 For a phone demo: `pnpm demo:fill`, start the server with `SPOOLSPOT_INSTANCE_CODE=<6 characters>`, then `pnpm demo:links http://<your-ip>:8787` prints links for three tagged places and two clips. `pnpm demo:remove` clears the demo items and their tags.
 
@@ -52,6 +52,7 @@ Boxed stock is a count per filament, place and pack (`spool` or `refill`). Count
 - `GET /api/v1/filaments`: the catalog, for choosing by tapping.
 - `GET /api/v1/locations/{id}/stock`: every stock line at a place (zero counts included).
 - `GET /api/v1/filaments/{id}/stock`: where a filament is held (counts above zero).
+- `GET /api/v1/filaments/{id}/clips`: every clip of one filament, with or without a place (SPOOL-211, for finding where a spool belongs without its tag). Each item has the shape of `GET /api/v1/locations/{id}/clips` (`id`, `state`, `location_id`, null when no place is recorded, and the filament's names; no tag ID). At most 200, in the order the clips were recorded; the response does not say when it stopped at 200. Read scope. An unknown and another tenant's filament answer the same 404; a malformed id answers 400.
 - `POST /api/v1/stock/adjust` with `{"filament_id", "location_id", "pack": "spool"|"refill", "delta": 1|-1, "confirm"?}`: +1 creates the line on the first tap. Refused with 422: below zero, a refill pack for a disposable filament, a container, a loaded slot (`slot_not_supported`), active or clip storage (`not_passive_storage`), over 10000. A line left at a non-passive place by a database from before migration 0004 can still be counted down to zero, never up; `node scripts/stock-off-passive.ts` lists such lines. Past a hard limit it answers 409 `needs_confirmation` until `confirm` is true; a soft limit goes through with a notice. A write that another request got to first answers 409 `conflict` and stores nothing. Unknown ids and another tenant's ids answer 404.
 
 Stock counts do not write events yet: intake and the other workflows that log events arrive with SPOOL-84.

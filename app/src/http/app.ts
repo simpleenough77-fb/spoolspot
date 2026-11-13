@@ -458,6 +458,17 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return lines ? c.json({ lines }) : c.json({ error: 'not_found' }, 404);
   });
 
+  // Every clip of one filament, with or without a place (SPOOL-211): the non-NFC way to find where a
+  // spool belongs. Same shape, bound (200) and order style as the clips at a place; no tag IDs. An unknown
+  // and another tenant's filament answer the same 404, like the other filament routes.
+  app.get('/api/v1/filaments/:id/clips', async (c) => {
+    if (!needRead(c)) return c.json({ error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    if (!CLIP_ID.test(id)) return c.json({ error: 'invalid_request' }, 400);
+    const clips = await c.get('data').clipsOf(id);
+    return clips ? c.json({ clips }) : c.json({ error: 'not_found' }, 404);
+  });
+
   app.get('/api/v1/locations/:id/stock', async (c) => {
     if (!needRead(c)) return c.json({ error: 'forbidden' }, 403);
     const id = c.req.param('id');
