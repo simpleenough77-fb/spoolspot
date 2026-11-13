@@ -89,6 +89,40 @@ export function validView(v) {
   return false;
 }
 
+/**
+ * The request for a container chosen from the place list (SPOOL-210): the same suggestion its tag would
+ * give, from GET /api/v1/placement-suggestions. The held clip, if any, is sent as on the tag route.
+ */
+export function suggestionsPath(placeId, held) {
+  const clip = held ? `&held=${encodeURIComponent(held.id)}` : '';
+  return `/api/v1/placement-suggestions?count=1&within=${encodeURIComponent(placeId)}${clip}`;
+}
+
+/**
+ * A container chosen from the list, as the container view its tag gives: the places inside from the
+ * tree node, the suggestion from the answer to suggestionsPath. With a clip held the answer carries at
+ * most one suggestion and `held_clip_used`, exactly as the tag view. With none it is the plain most-free
+ * list, and the first place that is not a slot is the tag view's suggestion (a container tag never
+ * suggests a slot with nothing held). Null when the answer has another shape.
+ */
+export function browsedView(node, answer, held) {
+  if (answer === null || typeof answer !== 'object' || !Array.isArray(answer.suggestions)) {
+    return null;
+  }
+  const list = answer.suggestions;
+  if (!list.every((s) => s !== null && validSuggestion(s) && typeof s.type === 'string')) {
+    return null;
+  }
+  if (held && (typeof answer.held_clip_used !== 'boolean' || list.length > 1)) return null;
+  return {
+    kind: 'container',
+    location: node,
+    inside: leavesUnder(node),
+    suggestion: held ? (list[0] ?? null) : (list.find((s) => s.type !== 'active_use') ?? null),
+    held_clip_used: held ? answer.held_clip_used : false,
+  };
+}
+
 /** The places from the top of the tree down to `id`, inclusive, as [{ id, name }], or [] if not found. */
 export function pathTo(nodes, id, depth = 0) {
   if (typeof id !== 'string' || depth > 40) return [];
@@ -189,27 +223,16 @@ export function heldInSlot(held, nodes) {
 }
 
 /**
- * The top of a container page. `held` is the clip held on this device ({ id, label, from }) or null.
+ * The top of a container page, reached by its tag or chosen from the list (both ask the API for the
+ * suggestion). `held` is the clip held on this device ({ id, label, from }) or null.
  * The suggestion is for that clip only when the API says it used it (`view.held_clip_used`); otherwise
  * it is the API's plain most-room suggestion and is never presented as being for the held clip.
- * `browsed`: the person chose the container from the list, so no suggestion was asked for. `inSlot`:
- * the place the held clip was picked up from (kept in this browser's storage) is a printer slot. That
- * is trusted only when the server agrees: it used the held clip and returned no suggestion, which is
+ * `inSlot`: the place the held clip was picked up from (kept in this browser's storage) is a printer
+ * slot. That is trusted only when the server agrees: it used the held clip and returned no suggestion, which is
  * what it does for a clip in a slot. A stale or altered stored place never hides the server's answer. Returns { heading, text, targetId, canChoose }; heading and
  * text are parts; targetId is the API's suggested leaf, never re-ranked here.
  */
-export function suggestionCopy(view, held, { browsed = false, inSlot = false } = {}) {
-  if (browsed) {
-    return {
-      heading: ['Suggested place'],
-      text: [
-        'Tap this container’s tag to get a suggested place. You can still choose a place below.',
-      ],
-      targetId: null,
-      // No server answer to confirm a slot here, so the stored place cannot hide the buttons.
-      canChoose: held !== null,
-    };
-  }
+export function suggestionCopy(view, held, { inSlot = false } = {}) {
   const used = held !== null && view.held_clip_used === true;
   const missing = held !== null && !used;
   if (used && inSlot && view.suggestion === null) {

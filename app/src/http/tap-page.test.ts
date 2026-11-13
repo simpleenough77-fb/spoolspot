@@ -80,8 +80,10 @@ interface TapView {
   suggestionCopy(
     view: { suggestion: Suggestion | null; held_clip_used?: boolean },
     held: Held | null,
-    options?: { browsed?: boolean; inSlot?: boolean },
+    options?: { inSlot?: boolean },
   ): Copy;
+  suggestionsPath(placeId: string, held: Held | null): string;
+  browsedView(node: Place, answer: unknown, held: Held | null): ContainerView | null;
   insideRows(
     inside: Place[],
     targetId: string | null,
@@ -400,10 +402,6 @@ describe('tap page wording (tapview.js)', () => {
       inSlot: true,
     });
     expect(T(unused.text)).not.toContain('printer slot');
-    // A chosen container has no server answer to agree, so the stored place hides nothing.
-    expect(
-      tapView.suggestionCopy({ suggestion: null }, held, { browsed: true, inSlot: true }).canChoose,
-    ).toBe(true);
   });
 
   it('accessible names are plain words with the visible label first (N1, WCAG 2.5.3)', () => {
@@ -431,15 +429,13 @@ describe('tap page wording (tapview.js)', () => {
     expect(none.canChoose).toBe(false);
   });
 
-  it('says when nothing inside has room, and when a container was chosen without its tag', () => {
+  it('says when nothing inside has room', () => {
     const used = tapView.suggestionCopy({ suggestion: null, held_clip_used: true }, held);
     expect(T(used.heading)).toBe('Best place for Acme PLA Red');
     expect(used).toMatchObject({ targetId: null, canChoose: true });
     expect(T(tapView.suggestionCopy({ suggestion: null, held_clip_used: false }, null).text)).toBe(
       'No place inside has a capacity set and room.',
     );
-    const browsed = tapView.suggestionCopy({ suggestion: null }, held, { browsed: true });
-    expect(browsed).toMatchObject({ targetId: null, canChoose: true });
   });
 
   it('gives each Choose a distinct name: the parent is added when two places share a name', () => {
@@ -455,6 +451,118 @@ describe('tap page wording (tapview.js)', () => {
     expect(T(rows[1]?.text ?? [])).toBe('Shelf 2: 10 free of 10 (0 used), hard limit.');
     // The suggested button's accessible name starts with its visible words (label in name).
     expect(T(tapView.suggestedLabel('Shelf 2'))).toBe('Choose this place, Shelf 2 (suggested)');
+  });
+});
+
+describe('a container chosen from the list (SPOOL-210)', () => {
+  const node: Place = {
+    id: 'closet',
+    name: 'Closet',
+    type: 'container',
+    leaf: false,
+    capacity_mode: null,
+    capacity: 10,
+    used: 0,
+    free: 10,
+    children: [
+      {
+        id: 'slot-1',
+        name: 'Slot 1',
+        type: 'active_use',
+        leaf: true,
+        capacity_mode: 'hard',
+        capacity: 1,
+        used: 0,
+        free: 1,
+      },
+      {
+        id: 'shelf-2',
+        name: 'Shelf 2',
+        type: 'active_storage',
+        leaf: true,
+        capacity_mode: 'hard',
+        capacity: 10,
+        used: 4,
+        free: 6,
+      },
+    ],
+  };
+  const s = (id: string, type: string) => ({
+    location_id: id,
+    name: id,
+    type,
+    capacity_mode: 'hard',
+    free: 1,
+    fits_all: true,
+    reason: 'most_free',
+  });
+  const held = { id: '00000000-0000-4000-8000-0000000000c1', label: 'Acme PLA Red' };
+
+  it('asks for one unit inside the place, with the held clip when there is one', () => {
+    expect(tapView.suggestionsPath('loc1.shelf-1', null)).toBe(
+      '/api/v1/placement-suggestions?count=1&within=loc1.shelf-1',
+    );
+    expect(tapView.suggestionsPath('a&b', held)).toBe(
+      `/api/v1/placement-suggestions?count=1&within=a%26b&held=${held.id}`,
+    );
+  });
+
+  it('builds the same view a container tag gives, slots left out with nothing held', () => {
+    const plain = tapView.browsedView(
+      node,
+      { suggestions: [s('slot-1', 'active_use'), s('shelf-2', 'active_storage')] },
+      null,
+    );
+    expect(plain).toMatchObject({ kind: 'container', held_clip_used: false });
+    expect(plain?.suggestion?.location_id).toBe('shelf-2');
+    expect(tapView.validView(plain)).toBe(true);
+    expect(
+      tapView.browsedView(node, { suggestions: [s('slot-1', 'active_use')] }, null)?.suggestion,
+    ).toBeNull();
+    const forHeld = tapView.browsedView(
+      node,
+      { suggestions: [s('shelf-2', 'active_storage')], held_clip_used: true },
+      held,
+    );
+    expect(forHeld).toMatchObject({ held_clip_used: true, suggestion: { location_id: 'shelf-2' } });
+    expect(T(tapView.suggestionCopy(forHeld ?? { suggestion: null }, held).heading)).toBe(
+      'Best place for Acme PLA Red',
+    );
+    // The server's answer, not the stored place alone, decides the slot message (L6 holds here too).
+    const inSlot = tapView.browsedView(node, { suggestions: [], held_clip_used: true }, held);
+    expect(
+      T(tapView.suggestionCopy(inSlot ?? { suggestion: null }, held, { inSlot: true }).text),
+    ).toContain('is loaded in a printer slot');
+    const notFound = tapView.browsedView(
+      node,
+      { suggestions: [s('shelf-2', 'active_storage')], held_clip_used: false },
+      held,
+    );
+    const copy = tapView.suggestionCopy(notFound ?? { suggestion: null }, held, { inSlot: true });
+    expect(T(copy.text)).toContain('was not found here');
+    expect(copy.canChoose).toBe(false);
+  });
+
+  it('refuses an answer of another shape', () => {
+    for (const answer of [
+      null,
+      [],
+      { suggestions: null },
+      { suggestions: [null] },
+      { suggestions: [{ ...s('shelf-2', 'active_storage'), free: '1' }] },
+      { suggestions: [{ ...s('shelf-2', 'active_storage'), type: 3 }] },
+    ]) {
+      expect(tapView.browsedView(node, answer, null)).toBeNull();
+    }
+    // With a clip held: held_clip_used must be there, and at most one suggestion.
+    expect(tapView.browsedView(node, { suggestions: [] }, held)).toBeNull();
+    expect(
+      tapView.browsedView(
+        node,
+        { suggestions: [s('a', 'active_storage'), s('b', 'active_storage')], held_clip_used: true },
+        held,
+      ),
+    ).toBeNull();
   });
 });
 

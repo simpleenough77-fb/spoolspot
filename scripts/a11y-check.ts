@@ -417,6 +417,54 @@ try {
       },
       [tag, held ?? ''] as const,
     );
+  /** The suggestion a container chosen from the list gets (SPOOL-210), asked from inside the page. */
+  const listSuggestion = (tab: Page, within: string, held?: string) =>
+    tab.evaluate(
+      async ([w, h]) => {
+        const query = h ? `&held=${h}` : '';
+        const r = await fetch(`/api/v1/placement-suggestions?count=1&within=${w}${query}`, {
+          cache: 'no-store',
+        });
+        const v = (await r.json()) as {
+          suggestions: { location_id: string; name: string; type: string }[];
+        };
+        return h
+          ? (v.suggestions[0] ?? null)
+          : (v.suggestions.find((x) => x.type !== 'active_use') ?? null);
+      },
+      [within, held ?? ''] as const,
+    );
+  /** A container chosen from the list shows the suggestion the same way its tag does (SPOOL-210). */
+  const chosenSuggests = async (
+    tab: Page,
+    label: string,
+    tag: string,
+    within: string,
+    held?: string,
+  ): Promise<number> => {
+    const viaTag = await apiSuggestion(tab, tag, held);
+    const viaList = await listSuggestion(tab, within, held);
+    let bad = 0;
+    if (viaTag?.location_id !== viaList?.location_id) {
+      console.error(
+        `::error::${label}: the list suggests ${viaList?.location_id ?? 'nothing'}, the tag ${viaTag?.location_id ?? 'nothing'}`,
+      );
+      bad += 1;
+    }
+    const top = await tab.locator('#suggestion').innerText();
+    if (top.includes('Tap this container')) {
+      console.error(`::error::${label}: the page still says to tap the container's tag`);
+      bad += 1;
+    }
+    if (viaTag !== null) {
+      bad += expectText(
+        await tab.locator('#suggestion-text').innerText(),
+        `Suggested: ${viaTag.name} (`,
+        `${label}: the suggestion is the one the tag gives`,
+      );
+    }
+    return bad;
+  };
   /** Nothing from a hostile name became an element or ran; the name is shown as literal text. */
   const noInjection = async (tab: Page, label: string, literal: string): Promise<number> => {
     const found = await tab.evaluate(() => ({
@@ -544,6 +592,17 @@ try {
       'Location 1 - Shelf 2',
       'a container chosen from the list shows the places inside',
     );
+    violations += expectText(
+      await tab.locator('#suggestion h3').innerText(),
+      'Most room',
+      'a container chosen from the list with nothing held shows the most-room suggestion',
+    );
+    violations += await chosenSuggests(
+      tab,
+      `tap (${scheme}, container chosen from the list)`,
+      CONTAINER_TAG,
+      'loc1',
+    );
     violations += await axe(tab, `tap (${scheme}, container chosen from the list)`);
     violations += await reflow(
       tab,
@@ -591,6 +650,28 @@ try {
     // A stale or altered stored place that claims a slot: the server used the clip and returned a
     // suggestion, so the page shows it with its buttons (the slot claim is not trusted alone).
     await setHeld(tab, held, 'Scan PLA Black', 'dreammaker.ams-a.slot-1');
+    // The non-NFC way (SPOOL-210): Active storage chosen from the list gets the same best place.
+    await tab.selectOption('#browse-place', 'active');
+    await tab.locator('#tap-status:has-text("Showing Active storage.")').waitFor();
+    violations += expectText(
+      await tab.locator('#suggestion h3').innerText(),
+      'Best place for Scan PLA Black',
+      'a container chosen from the list with a held clip shows the best place for it',
+    );
+    violations += (await tab.locator('#suggestion-go').count()) === 1 ? 0 : 1;
+    violations += (await tab.locator('#inside-list button').count()) > 0 ? 0 : 1;
+    violations += await chosenSuggests(
+      tab,
+      `tap (${scheme}, container chosen from the list, held clip)`,
+      ACTIVE_TAG,
+      'active',
+      held,
+    );
+    violations += await axe(tab, `tap (${scheme}, container chosen from the list, held clip)`);
+    violations += await reflow(
+      tab,
+      `tap (${scheme}, 320px wide, text at 200%, container chosen from the list, held clip)`,
+    );
     await tab.goto(`${tapBase}/${CODE}${ACTIVE_TAG}`);
     await tab.locator('#suggestion-go').waitFor();
     violations += (await tab.locator('#inside-list button').count()) > 0 ? 0 : 1;
@@ -654,6 +735,18 @@ try {
     );
     violations += (await tab.locator('#inside-list button, #suggestion-go').count()) === 0 ? 0 : 1;
     violations += await axe(tab, `tap (${scheme}, container, held clip in a slot)`);
+    await tab.selectOption('#browse-place', 'loc1');
+    await tab.locator('#tap-status:has-text("Showing Location 1.")').waitFor();
+    violations += expectText(
+      await tab.locator('#suggestion-text').innerText(),
+      'is loaded in a printer slot. Unload it from the printer first',
+      'a container chosen from the list, held clip in a slot, is told to be unloaded first',
+    );
+    violations += (await tab.locator('#inside-list button, #suggestion-go').count()) === 0 ? 0 : 1;
+    violations += await axe(
+      tab,
+      `tap (${scheme}, container chosen from the list, held clip in a slot)`,
+    );
 
     // A held clip the server does not know: not presented as ranked for it; no Choose.
     await setHeld(tab, '00000000-0000-4000-8000-00000000ffff', 'Gone PLA Grey', 'loc1.shelf-1');
@@ -667,6 +760,26 @@ try {
     violations += (await tab.locator('#suggestion').innerText()).includes('Best place') ? 1 : 0;
     violations += (await tab.locator('#inside-list button, #suggestion-go').count()) === 0 ? 0 : 1;
     violations += await axe(tab, `tap (${scheme}, container, held clip not found)`);
+    await tab.selectOption('#browse-place', 'active');
+    await tab.locator('#tap-status:has-text("Showing Active storage.")').waitFor();
+    violations += expectText(
+      await tab.locator('#suggestion-text').innerText(),
+      'was not found here. Tap its tag again to hold it.',
+      'a container chosen from the list, held clip not found, says so',
+    );
+    violations += (await tab.locator('#suggestion').innerText()).includes('Best place') ? 1 : 0;
+    violations += (await tab.locator('#inside-list button, #suggestion-go').count()) === 0 ? 0 : 1;
+    violations += await chosenSuggests(
+      tab,
+      `tap (${scheme}, container chosen from the list, held clip not found)`,
+      ACTIVE_TAG,
+      'active',
+      '00000000-0000-4000-8000-00000000ffff',
+    );
+    violations += await axe(
+      tab,
+      `tap (${scheme}, container chosen from the list, held clip not found)`,
+    );
 
     // Holding a clip where nothing inside suits it: no suggestion; choosing a full hard place warns.
     await tab.goto(`${tapBase}/${CODE}${fullTag}`);

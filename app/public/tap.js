@@ -7,7 +7,8 @@
 // it for ten minutes. A place tag shows the place, its chain, its room and its clips; "Move <held clip>
 // here". A container tag lists the places inside with their room and the API's suggested place for the
 // held clip at the top. Every move ends on the shared mover's on-screen confirm; nothing moves on a bare
-// tap. "Choose a place instead" reaches the same place views without a tag.
+// tap. "Choose a place instead" reaches the same place views without a tag; a container chosen there
+// asks the API for the same suggestion its tag would give (SPOOL-210).
 import { ApiError, getJson, signIn } from './api.js';
 import {
   clipLabel,
@@ -19,13 +20,13 @@ import {
   stateLabel,
 } from './mover.js';
 import {
+  browsedView,
   clipPlaceText,
   findNode,
   heldInSlot,
   heldState,
   insideRows,
   isolatedText,
-  leavesUnder,
   movedText,
   name,
   partsText,
@@ -33,6 +34,7 @@ import {
   roomText,
   suggestedLabel,
   suggestionCopy,
+  suggestionsPath,
   takesClips,
   validView,
 } from './tapview.js';
@@ -166,6 +168,12 @@ async function show(next = subject, { quiet = false } = {}) {
     const tree = await getJson('/api/v1/locations/tree');
     if (!validTree(tree)) throw new Error('unexpected data');
     nodes = tree.locations;
+    // A container chosen from the list: the same suggestion as its tag, for the same held clip.
+    const chosen = subject === TAG ? null : findNode(nodes, subject.place);
+    if (chosen && !chosen.leaf) {
+      view = browsedView(chosen, await getJson(suggestionsPath(chosen.id, held)), held);
+      if (view === null) throw new Error('unexpected data');
+    }
   } catch (error) {
     if (mine !== sequence) return;
     if (error instanceof ApiError && error.status === 401) {
@@ -173,6 +181,10 @@ async function show(next = subject, { quiet = false } = {}) {
       status.textContent = 'Sign in to see this tag.';
       signin.hidden = false;
       $('token').focus();
+    } else if (error instanceof ApiError && error.status === 404 && subject !== TAG && nodes) {
+      // Only the suggestion request of a chosen place answers 404: the place went since the list loaded.
+      status.textContent = 'That place is no longer in the list.';
+      fillBrowse(nodes);
     } else if (error instanceof ApiError && error.status === 404) {
       neutral();
     } else if (error instanceof ApiError && error.status === 429) {
@@ -187,16 +199,14 @@ async function show(next = subject, { quiet = false } = {}) {
     return;
   }
   if (mine !== sequence) return; // a newer load has taken over
-  if (subject !== TAG) {
+  if (subject !== TAG && view === null) {
     const node = findNode(nodes, subject.place);
     if (!node) {
       status.textContent = 'That place is no longer in the list.';
       fillBrowse(nodes);
       return;
     }
-    view = node.leaf
-      ? { kind: 'location', location: node }
-      : { kind: 'container', location: node, inside: leavesUnder(node), suggestion: null };
+    view = { kind: 'location', location: node };
   }
   const mover = createMoverPanel(
     leafPaths(nodes),
@@ -231,7 +241,7 @@ async function show(next = subject, { quiet = false } = {}) {
   detail.textContent = roomText(findNode(nodes, where.id) ?? where);
   body.replaceChildren(...pathBlock(pathTo(nodes, where.id), 'Where this is:'));
   if (view.kind === 'container') {
-    showContainer(view, held, subject !== TAG, nodes, mover);
+    showContainer(view, held, nodes, mover);
     return;
   }
   if (held) {
@@ -293,8 +303,8 @@ function showClip(clip, nodes, mover) {
   };
 }
 
-function showContainer(view, held, browsed, nodes, mover) {
-  const copy = suggestionCopy(view, held, { browsed, inSlot: heldInSlot(held, nodes) });
+function showContainer(view, held, nodes, mover) {
+  const copy = suggestionCopy(view, held, { inSlot: heldInSlot(held, nodes) });
   // The clip this view was drawn for; a tap checks it is still the one held.
   const drawnFor = copy.canChoose && held ? held.id : null;
   const top = el('div', '', { id: 'suggestion', class: 'suggestion' });

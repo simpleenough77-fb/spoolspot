@@ -531,14 +531,33 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const type = LEAF_TYPES.find((t) => t === typeText);
     const withinValues = c.req.queries('within');
     const within = single(withinValues);
+    // `held` (SPOOL-210): the clip the person is holding, checked as on the tag route. It asks what a
+    // container tag would suggest inside `within` for that clip, so it needs `within`, one unit and no
+    // `type` (the clip's state picks the types); anything else is refused, never ignored.
+    const heldValues = c.req.queries('held');
+    const held = single(heldValues);
     if (
       count === null ||
       (typeValues !== undefined && type === undefined) ||
       (typeValues?.length ?? 0) > 1 ||
       (withinValues !== undefined &&
-        (within === undefined || within.length > 64 || !LOCATION_ID.test(within)))
+        (within === undefined || within.length > 64 || !LOCATION_ID.test(within))) ||
+      (heldValues !== undefined &&
+        (held === undefined ||
+          !CLIP_ID.test(held) ||
+          within === undefined ||
+          count !== 1 ||
+          typeValues !== undefined))
     ) {
       return c.json({ error: 'invalid_request' }, 400);
+    }
+    if (held !== undefined && within !== undefined) {
+      const answer = await c.get('data').heldClipSuggestion(within, held);
+      if (answer === 'not_found') return c.json({ error: 'not_found' }, 404);
+      return c.json({
+        suggestions: answer.suggestion === null ? [] : [answer.suggestion],
+        held_clip_used: answer.held_clip_used,
+      });
     }
     const suggestions = await c.get('data').placementSuggestions(count, type, within);
     if (suggestions === 'not_found') return c.json({ error: 'not_found' }, 404);
