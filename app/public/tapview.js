@@ -44,7 +44,7 @@ function validLocation(l) {
     Number.isInteger(l.used) &&
     (l.free === null || Number.isInteger(l.free)) &&
     (l.capacity === null || Number.isInteger(l.capacity)) &&
-    (l.capacity_mode === null || l.capacity_mode in MODE)
+    (l.capacity_mode === null || Object.hasOwn(MODE, l.capacity_mode))
   );
 }
 
@@ -55,7 +55,7 @@ function validSuggestion(s) {
       typeof s.location_id === 'string' &&
       typeof s.name === 'string' &&
       Number.isInteger(s.free) &&
-      s.capacity_mode in MODE &&
+      Object.hasOwn(MODE, s.capacity_mode) &&
       typeof s.reason === 'string')
   );
 }
@@ -188,7 +188,9 @@ export function roomText(place) {
   if (over > 0) text += `, over by ${String(over)}`;
   // Used counts every leaf below; free and capacity count only leaves with a capacity set.
   if (!place.leaf && unset > 0) text += `, ${plural(unset, 'place')} without capacity set`;
-  if (place.leaf && place.capacity_mode) text += `, ${MODE[place.capacity_mode]}`;
+  if (place.leaf && Object.hasOwn(MODE, place.capacity_mode ?? '')) {
+    text += `, ${MODE[place.capacity_mode]}`;
+  }
   return `${text}.`;
 }
 
@@ -274,7 +276,8 @@ export function suggestionCopy(view, held, { inSlot = false } = {}) {
         };
   }
   const room = `${plural(s.free, 'place')} free, ${MODE[s.capacity_mode]}`;
-  const why = REASON[s.reason] ?? REASON.most_free;
+  // Own keys only: a reason such as "toString" must not pick up an inherited function.
+  const why = Object.hasOwn(REASON, s.reason) ? REASON[s.reason] : REASON.most_free;
   if (used) {
     return {
       heading: ['Best place for ', name(held.label)],

@@ -143,7 +143,10 @@ let sequence = 0;
 
 let shownName = '';
 
-/** `quiet`: a choice from the place list; only the result is announced, not "Loading…". */
+/**
+ * `quiet`: a choice from the place list; only the result is announced, not "Loading…". Resolves to
+ * true when this call drew the card and is still the latest one, so only that call announces it.
+ */
 async function show(next = subject, { quiet = false } = {}) {
   subject = next;
   sequence += 1;
@@ -182,9 +185,12 @@ async function show(next = subject, { quiet = false } = {}) {
       signin.hidden = false;
       $('token').focus();
     } else if (error instanceof ApiError && error.status === 404 && subject !== TAG && nodes) {
-      // Only the suggestion request of a chosen place answers 404: the place went since the list loaded.
-      status.textContent = 'That place is no longer in the list.';
+      // Only the suggestion request of a chosen place answers 404. The fresh tree still had the place,
+      // so it changed between the two requests: nothing is shown and nothing stays selected.
+      card.hidden = true;
+      status.textContent = 'That place has just changed. Choose it again.';
       fillBrowse(nodes);
+      browsePlace.value = '';
     } else if (error instanceof ApiError && error.status === 404) {
       neutral();
     } else if (error instanceof ApiError && error.status === 429) {
@@ -232,7 +238,7 @@ async function show(next = subject, { quiet = false } = {}) {
   fillBrowse(nodes);
   if (view.kind === 'clip') {
     showClip(view.clip, nodes, mover);
-    return;
+    return mine === sequence;
   }
   const where = view.location;
   shownName = where.name;
@@ -242,7 +248,7 @@ async function show(next = subject, { quiet = false } = {}) {
   body.replaceChildren(...pathBlock(pathTo(nodes, where.id), 'Where this is:'));
   if (view.kind === 'container') {
     showContainer(view, held, nodes, mover);
-    return;
+    return mine === sequence;
   }
   if (held) {
     moveHeld.hidden = false;
@@ -252,6 +258,7 @@ async function show(next = subject, { quiet = false } = {}) {
     };
   }
   await listClips(where.id, mover, mine);
+  return mine === sequence;
 }
 
 let currentNodes = [];
@@ -405,8 +412,9 @@ browsePlace.addEventListener('change', () => {
   const id = browsePlace.value;
   // Focus stays on the list; the status line says only what is shown (no "Loading…" on each choice).
   // This runs on `change`, not `input`.
-  void show(id === '' ? TAG : { place: id }, { quiet: true }).then(() => {
-    if (!card.hidden && id !== '') say(['Showing ', name(shownName), '.']);
+  void show(id === '' ? TAG : { place: id }, { quiet: true }).then((drew) => {
+    // A choice overtaken by a later one says nothing: the later one announces what is shown.
+    if (drew === true && !card.hidden && id !== '') say(['Showing ', name(shownName), '.']);
   });
 });
 

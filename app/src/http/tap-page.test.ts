@@ -497,6 +497,11 @@ describe('a container chosen from the list (SPOOL-210)', () => {
     reason: 'most_free',
   });
   const held = { id: '00000000-0000-4000-8000-0000000000c1', label: 'Acme PLA Red' };
+  const leafOf = (n: Place): Place => {
+    const leaf = n.children?.[1];
+    if (!leaf) throw new Error('no leaf');
+    return leaf;
+  };
 
   it('asks for one unit inside the place, with the held clip when there is one', () => {
     expect(tapView.suggestionsPath('loc1.shelf-1', null)).toBe(
@@ -541,6 +546,35 @@ describe('a container chosen from the list (SPOOL-210)', () => {
     const copy = tapView.suggestionCopy(notFound ?? { suggestion: null }, held, { inSlot: true });
     expect(T(copy.text)).toContain('was not found here');
     expect(copy.canChoose).toBe(false);
+  });
+
+  it('accepts only its own limit and reason names, never inherited ones such as toString', () => {
+    for (const bad of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      expect(
+        tapView.browsedView(
+          node,
+          { suggestions: [{ ...s('shelf-2', 'active_storage'), capacity_mode: bad }] },
+          null,
+        ),
+        bad,
+      ).toBeNull();
+      expect(
+        tapView.validView({
+          kind: 'location',
+          location: { ...node.children?.[1], capacity_mode: bad },
+        }),
+        bad,
+      ).toBe(false);
+      // An unknown reason reads as "most room", not as an inherited function's text.
+      const copy = tapView.suggestionCopy(
+        { suggestion: { ...s('shelf-2', 'active_storage'), capacity_mode: 'hard', reason: bad } },
+        null,
+      );
+      expect(T(copy.text)).toContain('because it has the most room.');
+      expect(tapView.roomText({ ...leafOf(node), capacity_mode: bad as 'hard' })).toBe(
+        '6 free of 10 (4 used).',
+      );
+    }
   });
 
   it('refuses an answer of another shape', () => {

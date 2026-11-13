@@ -507,6 +507,71 @@ describe('placement-suggestions held: another tenant’s rows never count (SPOOL
   });
 });
 
+describe('placement-suggestions held: a leaf or a slot as within (SPOOL-210)', () => {
+  it('a leaf answers whether that one place suits the held clip; a slot always answers none', async () => {
+    const { get, filament, clip, set } = await setup();
+    const acme = filament(TENANT_A, 'Acme');
+    set('clips.bin-1', 20);
+    const onSpool = clip(TENANT_A, acme, 'loc1.shelf-1');
+    const free = clip(TENANT_A, acme, null, 'free');
+    const ask = async (within: string, held: string): Promise<unknown> =>
+      (await get(`/api/v1/placement-suggestions?count=1&within=${within}&held=${held}`)).json();
+    // A leaf that suits the clip and has room: that leaf.
+    expect(await ask('loc1.shelf-2', onSpool)).toEqual({
+      suggestions: [expect.objectContaining({ location_id: 'loc1.shelf-2', reason: 'most_free' })],
+      held_clip_used: true,
+    });
+    expect(await ask('clips.bin-1', free)).toEqual({
+      suggestions: [expect.objectContaining({ location_id: 'clips.bin-1' })],
+      held_clip_used: true,
+    });
+    // The wrong type for the clip's state, the clip's own place, no capacity: none.
+    for (const [within, held] of [
+      ['clips.bin-1', onSpool],
+      ['loc1.shelf-2', free],
+      ['loc1.shelf-1', onSpool],
+      ['closet-storage.shelf-1', onSpool],
+    ] as const) {
+      expect(await ask(within, held), within).toEqual({ suggestions: [], held_clip_used: true });
+    }
+    // A slot, empty or not, and whatever the clip: none (the load workflow fills slots).
+    for (const held of [onSpool, free]) {
+      for (const slot of ['dreammaker.ams-a.slot-2', 'dreammaker.ams-a.slot-1']) {
+        expect(await ask(slot, held), slot).toEqual({ suggestions: [], held_clip_used: true });
+      }
+    }
+  });
+});
+
+describe('placement-suggestions held: the same clip id in two tenants (SPOOL-210)', () => {
+  it('each tenant ranks its own clip of that id: on a spool in A, in a slot in B', async () => {
+    const { get, filament, db } = await setup();
+    const id = '00000000-0000-4000-8000-0000000b0001';
+    db.prepare(
+      'INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(TENANT_A, id, 'KHB000000001', filament(TENANT_A, 'Acme'), 'loc1.shelf-1', 'on_spool');
+    db.prepare(
+      'INSERT INTO clip (tenant_id, id, tag_id, filament_id, location_id, state) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(
+      TENANT_B,
+      id,
+      'KHB000000002',
+      filament(TENANT_B, 'Acme'),
+      'dreammaker.ams-a.slot-1',
+      'on_spool',
+    );
+    const path = `/api/v1/placement-suggestions?count=1&within=active&held=${id}`;
+    expect(await (await get(path, TENANT_A)).json()).toEqual({
+      suggestions: [expect.objectContaining({ location_id: 'loc1.shelf-2' })],
+      held_clip_used: true,
+    });
+    expect(await (await get(path, TENANT_B)).json()).toEqual({
+      suggestions: [],
+      held_clip_used: true,
+    });
+  });
+});
+
 describe('placement-suggestions held: validation and isolation (SPOOL-210)', () => {
   it('refuses a malformed or repeated held with 400 before anything is looked up', async () => {
     const { get, log } = await setup();

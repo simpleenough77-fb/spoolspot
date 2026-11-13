@@ -465,6 +465,152 @@ try {
     }
     return bad;
   };
+  /** Every status-line text from now on, one entry per change (the live region's announcements). */
+  const watchStatus = (tab: Page) =>
+    tab.evaluate(() => {
+      const w = window as unknown as { __said: string[] };
+      w.__said = [];
+      const line = document.getElementById('tap-status');
+      if (!line) return;
+      new MutationObserver(() => {
+        w.__said.push(line.textContent);
+      }).observe(line, { childList: true, characterData: true, subtree: true });
+    });
+  const said = (tab: Page) =>
+    tab.evaluate(() => (window as unknown as { __said: string[] }).__said);
+  /**
+   * Out-of-order answers on the list path (SPOOL-210 review): the first choice's suggestion answer is
+   * held back until a second choice has drawn. The late answer must change nothing and say nothing.
+   * A clip is held (a real one of the tenant; nothing is moved) so the Choose buttons are drawn.
+   */
+  const listRace = async (tab: Page, scheme: string): Promise<number> => {
+    const label = `tap (${scheme}, list choices answered out of order)`;
+    let bad = 0;
+    const first = /\/api\/v1\/placement-suggestions\?.*within=closet-storage(&|$)/;
+    let release: (() => Promise<void>) | undefined;
+    const held = new Promise<void>((resolve) => {
+      void tab.route(first, (route) => {
+        release = () => route.continue();
+        resolve();
+      });
+    });
+    await setHeld(tab, '00000000-0000-4000-8000-000000000017', 'Scan PLA Black', 'loc1.shelf-1');
+    await watchStatus(tab);
+    await tab.selectOption('#browse-place', 'closet-storage');
+    await held;
+    await tab.selectOption('#browse-place', 'active');
+    await tab.locator('#tap-status:has-text("Showing Active storage.")').waitFor();
+    const late = tab.waitForResponse(first);
+    await release?.();
+    await late;
+    // Let the late answer's continuation run to the end before looking.
+    await tab.waitForTimeout(300);
+    await tab.unroute(first);
+    bad += expectText(await tab.locator('#tag-heading').innerText(), 'Active storage', label);
+    bad += expectText(
+      await tab.locator('#suggestion h3').innerText(),
+      'Best place for Scan PLA Black',
+      label,
+    );
+    if ((await tab.locator('#browse-place').inputValue()) !== 'active') {
+      console.error(`::error::${label}: the chooser no longer shows the place on screen`);
+      bad += 1;
+    }
+    // Every Choose button targets a place inside Active storage, none inside the first choice.
+    const inside = await tab.evaluate(async () => {
+      const r = await fetch('/api/v1/locations/tree', { cache: 'no-store' });
+      interface N {
+        id: string;
+        name: string;
+        leaf: boolean;
+        children: N[];
+      }
+      const all: N[] = [];
+      const walk = (ns: N[], under: boolean, top: string) => {
+        for (const n of ns) {
+          const here = under || n.id === top;
+          if (here && n.leaf) all.push(n);
+          walk(n.children, here, top);
+        }
+      };
+      const tree = ((await r.json()) as { locations: N[] }).locations;
+      walk(tree, false, 'active');
+      return all.map((n) => `Choose ${n.name}`);
+    });
+    const labels = await tab
+      .locator('#inside-list button')
+      .evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label') ?? ''));
+    if (labels.length === 0 || labels.some((l) => !inside.includes(l))) {
+      console.error(
+        `::error::${label}: Choose buttons are not all for Active storage: ${labels.join(', ')}`,
+      );
+      bad += 1;
+    }
+    const announced = (await said(tab)).filter((t) => t.startsWith('Showing'));
+    if (announced.join('|') !== 'Showing Active storage.') {
+      console.error(`::error::${label}: the live region announced ${JSON.stringify(announced)}`);
+      bad += 1;
+    }
+    bad += await axe(tab, label);
+    await tab.evaluate(() => {
+      localStorage.removeItem('spoolspot.held-clip');
+    });
+    return bad;
+  };
+  /**
+   * A place chosen from the list that is gone (SPOOL-210 review): the page never claims what the chooser
+   * contradicts. Gone from the fresh tree: "no longer in the list". Still in the fresh tree but refused
+   * by the suggestion request: "has just changed". Either way no card and nothing selected.
+   */
+  const placeGone = async (tab: Page, scheme: string): Promise<number> => {
+    let bad = 0;
+    const check = async (label: string, message: string, place: string): Promise<void> => {
+      await tab.selectOption('#browse-place', place);
+      await tab.locator(`#tap-status:has-text("${message}")`).waitFor();
+      if (await tab.locator('#tag-card').isVisible()) {
+        console.error(`::error::${label}: a card is still shown`);
+        bad += 1;
+      }
+      const value = await tab.locator('#browse-place').inputValue();
+      if (value !== '') {
+        console.error(`::error::${label}: the chooser still selects ${value}`);
+        bad += 1;
+      }
+      bad += await axe(tab, label);
+    };
+    const suggestions = /\/api\/v1\/placement-suggestions\?.*within=loc2(&|$)/;
+    await tab.route(suggestions, (route) =>
+      route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: '{"error":"not_found"}',
+      }),
+    );
+    await check(
+      `tap (${scheme}, chosen place changed before its suggestion)`,
+      'That place has just changed. Choose it again.',
+      'loc2',
+    );
+    await tab.unroute(suggestions);
+    const tree = /\/api\/v1\/locations\/tree$/;
+    await tab.route(tree, async (route) => {
+      interface N {
+        id: string;
+        children: N[];
+      }
+      const real = (await (await route.fetch()).json()) as { locations: N[] };
+      const prune = (ns: N[]): N[] =>
+        ns.filter((n) => n.id !== 'loc3').map((n) => ({ ...n, children: prune(n.children) }));
+      await route.fulfill({ json: { locations: prune(real.locations) } });
+    });
+    await check(
+      `tap (${scheme}, chosen place gone from the list)`,
+      'That place is no longer in the list.',
+      'loc3',
+    );
+    await tab.unroute(tree);
+    return bad;
+  };
   /** Nothing from a hostile name became an element or ran; the name is shown as literal text. */
   const noInjection = async (tab: Page, label: string, literal: string): Promise<number> => {
     const found = await tab.evaluate(() => ({
@@ -608,6 +754,8 @@ try {
       tab,
       `tap (${scheme}, 320px wide, text at 200%, container chosen from the list)`,
     );
+    violations += await listRace(tab, scheme);
+    violations += await placeGone(tab, scheme);
     // A container tag: the card must render (not "data this page does not understand").
     await tab.goto(`${tapBase}/${CODE}${CONTAINER_TAG}`);
     await tab.waitForFunction(() => {
