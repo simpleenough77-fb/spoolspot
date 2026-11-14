@@ -36,7 +36,7 @@
     "@hono/node-server": "2.1.6",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "hono": "4.13.16"
+    "hono": "4.13.17"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
